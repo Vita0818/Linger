@@ -46,6 +46,7 @@ import {
   type RunnerGatewayPrincipal,
 } from "./runner-gateway-principal.js";
 import { isLocalSkillOutcome } from "./runner-local-capabilities.js";
+import { isLocalModelsOutcome } from "./runner-local-models.js";
 import {
   RunnerGatewayError,
   RunnerGatewayProtocolError,
@@ -84,6 +85,7 @@ export class RunnerConnections {
       | "lifecycle"
       | "modelInvocation"
       | "computerTools"
+      | "localModels"
       | "operations"
       | "preparation"
     >,
@@ -406,10 +408,12 @@ export class RunnerConnections {
       phase: "reconciling",
       operationReconciled: false,
       runtimeDiagnosticsRevision: 0,
+      localModelsRevision: 0,
     };
     this.#connections.set(hello.runner_id, connection);
     if (previous?.connected) {
       this.owners.capabilities().rejectConnectionWaiters(previous);
+      this.owners.localModels().disconnected(previous);
       this.#clearHeartbeat(previous);
       previous.connected = false;
       previous.peer.close(1012, "Runner connection replaced");
@@ -661,6 +665,14 @@ export class RunnerConnections {
       this.owners.capabilities().receiveLocalSkillOutcome(envelope);
       return;
     }
+    if (envelope.type === "runner.local_models") {
+      this.owners.localModels().receiveSnapshot(connection, envelope);
+      return;
+    }
+    if (isLocalModelsOutcome(envelope)) {
+      this.owners.localModels().receiveOutcome(connection, envelope);
+      return;
+    }
     if (envelope.type === "prepared" && envelope.target === "provider") {
       // Advisory: a prepare outcome carries no Operation identity or state.
       logAgentEvent("info", "runner.provider.prepared", {
@@ -878,6 +890,7 @@ export class RunnerConnections {
 
   disconnect(connection: ConnectedRunner): void {
     this.owners.capabilities().rejectConnectionWaiters(connection);
+    this.owners.localModels().disconnected(connection);
     this.#clearHeartbeat(connection);
     connection.connected = false;
     this.owners.operations().wakeCapacityWaiters();

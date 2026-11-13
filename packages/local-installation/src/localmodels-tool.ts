@@ -269,7 +269,7 @@ async function prepareLocalmodelsTool(
   options: Options = {},
   dependencies: { source?: LocalmodelsToolSource; fetcher?: typeof fetch } = {},
 ) {
-  const pinned = dependencies.source ?? pinnedToolSource();
+  const pinned = dependencies.source ?? configuredLocalmodelsToolSource();
   if (!pinned)
     throw new Error(
       "Upstream tool distribution metadata is unavailable. Download the current Linger installer.",
@@ -365,6 +365,17 @@ async function prepareLocalmodelsTool(
     }
   });
 }
+/**
+ * The tool this distribution ships, from the installer's
+ * LINGER_LOCALMODELS_TOOL_JSON, or undefined when it ships none. The one
+ * reader of that variable.
+ */
+export function configuredLocalmodelsToolSource():
+  | LocalmodelsToolSource
+  | undefined {
+  const raw = process.env.LINGER_LOCALMODELS_TOOL_JSON;
+  return raw ? validateToolSource(JSON.parse(raw)) : undefined;
+}
 type ToolLocation = Awaited<ReturnType<typeof prepareLocalmodelsTool>>;
 const preparing = new Map<string, Promise<ToolLocation>>();
 export async function ensureLocalmodelsTool(
@@ -373,7 +384,7 @@ export async function ensureLocalmodelsTool(
   dependencies: { source?: LocalmodelsToolSource; fetcher?: typeof fetch } = {},
 ): Promise<ToolLocation> {
   options.signal?.throwIfAborted();
-  const key = `${path.resolve(home)}:${JSON.stringify(dependencies.source ?? process.env.LINGER_LOCALMODELS_TOOL_JSON)}`;
+  const key = `${path.resolve(home)}:${JSON.stringify(dependencies.source ?? configuredLocalmodelsToolSource())}`;
   const running = preparing.get(key);
   if (running) {
     const result = await running;
@@ -388,6 +399,14 @@ export async function ensureLocalmodelsTool(
     preparing.delete(key);
   }
 }
+/** LOCALMODELS_STATE of every call for this home. */
+export function localmodelsStateDirectory(home: string): string {
+  return path.join(path.resolve(home), "runtime", "localmodels", "state");
+}
+/** Where this home's models live: every call's --base-dir. */
+export function localmodelsBaseDirectory(home: string): string {
+  return path.join(path.resolve(home), "runtime", "localmodels", "models");
+}
 export async function runLocalmodels(
   home: string,
   args: string[],
@@ -397,12 +416,7 @@ export async function runLocalmodels(
   const startedAt = Date.now();
   const tool = await ensureLocalmodelsTool(home, options);
   const checkedAt = Date.now();
-  const state = path.join(
-    path.resolve(home),
-    "runtime",
-    "localmodels",
-    "state",
-  );
+  const state = localmodelsStateDirectory(home);
   await privateDirectory(state);
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -542,16 +556,11 @@ export async function stopLocalmodels(
   if (failed.length) throw new Error(failed.join("; "));
 }
 async function hasPinnedTool(home: string): Promise<boolean> {
-  const source = pinnedToolSource();
+  const source = configuredLocalmodelsToolSource();
   if (!source) return false;
   return !!(await installedKit(kitDirectory(home, source), source).catch(
     () => undefined,
   ));
-}
-/** The kit this release pins, from the installer's published metadata. */
-function pinnedToolSource(): LocalmodelsToolSource | undefined {
-  const raw = process.env.LINGER_LOCALMODELS_TOOL_JSON;
-  return raw ? validateToolSource(JSON.parse(raw)) : undefined;
 }
 function kitDirectory(home: string, source: LocalmodelsToolSource): string {
   return path.join(path.resolve(home), "tools", "localmodels", source.sha256);
