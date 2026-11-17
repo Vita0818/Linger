@@ -8,7 +8,10 @@ function runProcess(
   options: { timeoutMs: number },
 ) {
   // Inspectors must not inherit the lease and appear among the owned processes.
-  const env = { ...process.env };
+  // ps prints lstart in the caller's locale (a zh-CN Mac prints a different
+  // number of fields), and a recorded birth must read the same from every
+  // process that checks it, so inspectors run in the C locale.
+  const env: NodeJS.ProcessEnv = { ...process.env, LC_ALL: "C", LANG: "C" };
   delete env[leaseKey];
   return new Promise<{ code: number; stdout: string }>((resolve, reject) => {
     execFile(
@@ -113,6 +116,24 @@ export async function linuxProcessStates(
   );
   return states.filter((state) => state !== undefined);
 }
+/**
+ * Reads one `ps -o lstart=,uid=,pgid=,stat=` line. The start time is every
+ * field before the last three, so its word count never shifts the others.
+ */
+export function darwinProcessIdentity(
+  line: string,
+): { birth: string; uid: number; group: number; state: string } | undefined {
+  const parts = line.trim().split(/\s+/);
+  if (parts.length < 4) return;
+  const [uid, group, state] = parts.slice(-3) as [string, string, string];
+  if (!/^\d+$/.test(uid) || !/^\d+$/.test(group)) return;
+  return {
+    birth: `darwin:${parts.slice(0, -1).join(":")}`,
+    uid: Number(uid),
+    group: Number(group),
+    state,
+  };
+}
 export async function nativeProcessIdentity(
   pid: number,
   lease: string,
@@ -158,14 +179,15 @@ export async function nativeProcessIdentity(
         !environment.stdout.includes(`${leaseKey}=${lease}`)
       )
         return;
-      const parts = identity.stdout.trim().split(/\s+/);
+      const parsed = darwinProcessIdentity(identity.stdout);
       if (
-        Number(parts[5]) !== process.getuid?.() ||
-        (requireLeader && Number(parts[6]) !== pid) ||
-        parts[7]?.startsWith("Z")
+        !parsed ||
+        parsed.uid !== process.getuid?.() ||
+        (requireLeader && parsed.group !== pid) ||
+        parsed.state.startsWith("Z")
       )
         return;
-      return `darwin:${parts.slice(0, 7).join(":")}`;
+      return parsed.birth;
     }
   } catch {
     return;
