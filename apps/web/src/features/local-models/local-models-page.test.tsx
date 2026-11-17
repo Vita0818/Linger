@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+  cleanup,
   fireEvent,
   render,
   screen,
@@ -21,7 +22,14 @@ import { teamHubErrorResponse } from "@/test/teamhub-test-server";
 
 import { LocalModelsPage } from "./local-models-page";
 import type { LocalModelsView } from "./local-models-queries";
-import { gb, gpuPool, labView, macView } from "./local-models-test-support";
+import {
+  gb,
+  gpuPool,
+  labView,
+  localModel,
+  macView,
+  modelView,
+} from "./local-models-test-support";
 
 const tenantId = "tenant-northstar";
 const viewPath =
@@ -235,6 +243,54 @@ describe("LocalModelsPage", () => {
     // A model that can't be downloaded has no action, only its toggle.
     expect(within(card("Llama 3.1 405B")).getAllByRole("button")).toHaveLength(
       1,
+    );
+  });
+
+  it("marks the model the Computer recommends, whatever its fit", async () => {
+    // localmodels recommends what its stack would install: on a small Mac a
+    // ladder model, on a small card a fallback that runs from system memory.
+    const absent = (
+      id: string,
+      name: string,
+      fit: "system" | "unified",
+      recommended: boolean,
+    ) =>
+      modelView(
+        localModel({
+          download_bytes: gb(2.6),
+          family: "other",
+          fit,
+          id,
+          name,
+          pool: fit === "system" ? "system" : "unified",
+          recommended,
+        }),
+      );
+    const fixture = setup([
+      macView({
+        models: [
+          absent("lfm3-1.7b:Q8_0", "LFM3 1.7B", "unified", false),
+          absent("spark-x2.6-4b:Q4_K_M", "Spark-X2.6 4B", "unified", true),
+        ],
+      }),
+      labView({
+        computer: { ...labView().computer, computer_id: "computer-win" },
+        models: [absent("qwen3.5-9b:Q4_K_M", "Qwen3.5 9B", "system", true)],
+      }),
+    ]);
+    renderPage(fixture, "?computer=computer-mac");
+    await findModels();
+    expect(statuses()).toEqual([
+      "Spark-X2.6 4B: Not downloaded · 2.6 GB · Recommended",
+      "LFM3 1.7B: Not downloaded · 2.6 GB",
+    ]);
+
+    cleanup();
+    renderPage(fixture, "?computer=computer-win");
+    await waitFor(() =>
+      expect(statuses()).toEqual([
+        "Qwen3.5 9B: Not downloaded · 2.6 GB · Recommended",
+      ]),
     );
   });
 
