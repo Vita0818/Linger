@@ -282,19 +282,19 @@ Gateway and runs Agents. The daemon exits with the app.
   `%APPDATA%\Linger` and the Linger home with all their data and asks nothing;
   a later install starts the services again (resume, or setup's Install).
   Setup over an installed release stops it the same way before it replaces
-  the files, since the services run on `Linger.exe` and hold it open. Each
+  the files, since the services run on `Linger.exe` and hold it open. Setup
+  always stops them with its own `installer.js`, copied to the plugins
+  folder, on the old `Linger.exe`: an earlier release's script may not stop
+  them (0.1.2's left TeamHub, web and node-services running on Windows). Each
   install writes `resources\stops-services`; a release without it would start
-  on `--quit` and has no `--stop`, so setup skips `--quit` (CloseLinger asks
-  the person to quit a running app) and runs its own `installer.js`, copied to
-  the plugins folder, on the old `Linger.exe`. Retry in that prompt runs the
-  stop again. Nothing running: the stop finds nothing and setup goes on. The
+  on `--quit`, so setup skips `--quit` for it (CloseLinger asks the person to
+  quit a running app). Retry in that prompt runs the stop again. Nothing running: the stop finds nothing and setup goes on. The
   stop also asks the pinned localmodels kit, when that kit is installed in the
   home, to end its foundations controller under `runtime/model-services`
   (`foundations stop`) and the stack's processes (`stack down`); it downloads
   nothing, and Linger does not end the tool's processes itself.
-  Setup over a release runs that release's script, so a release from before
-  this stop leaves its controller running; on Windows the tool cannot prove
-  and end a controller from a kit that has no stop command either.
+  On Windows the tool cannot prove and end a controller from a kit that has
+  no stop command.
   The tool refuses the chat stack on Windows, so no engine runs there.
 - `src/main/legacy-migration.ts`: on start, stops a bridge an older version
   left running and moves its credential and the Desktop 0.16 daemon identity

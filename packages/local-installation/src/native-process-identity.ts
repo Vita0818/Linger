@@ -36,12 +36,18 @@ function runProcess(
 // Windows has no process groups and no readable foreign environment. The
 // supervisor carries the lease in its command line (the job file name), and
 // what it starts is found through parent links; a creation time older than
-// the parent's means a reused PID, never a child.
+// the parent's means a reused PID, never a child. The listening TCP ports
+// come in the same snapshot, so a port's owner is judged against the same
+// process tree.
 const WINDOWS_PROCESSES = String.raw`
 $ErrorActionPreference = 'Stop'
-Get-CimInstance Win32_Process | ForEach-Object {
+$p = @(Get-CimInstance Win32_Process | ForEach-Object {
   [pscustomobject]@{ p = $_.ProcessId; q = $_.ParentProcessId; c = $_.CreationDate.ToFileTimeUtc(); l = [string]$_.CommandLine }
-} | ConvertTo-Json -Compress
+})
+$n = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
+  [pscustomobject]@{ o = [int]$_.OwningProcess; t = [int]$_.LocalPort; a = [string]$_.LocalAddress }
+})
+[pscustomobject]@{ p = $p; n = $n } | ConvertTo-Json -Compress -Depth 3
 `;
 export interface WindowsProcess {
   pid: number;
@@ -49,7 +55,42 @@ export interface WindowsProcess {
   created: number;
   command: string;
 }
-export async function windowsProcesses(): Promise<WindowsProcess[]> {
+export interface WindowsSnapshot {
+  processes: WindowsProcess[];
+  /**
+   * Listening TCP port to the owning PID, for the addresses the services
+   * bind and check: 127.0.0.1, or every IPv4 address. Another program on
+   * ::1 neither blocks them nor answers their health checks.
+   */
+  listeners: Map<number, number>;
+}
+type Rows<T> = T | T[] | null | undefined;
+const rows = <T>(value: Rows<T>): T[] =>
+  value == null ? [] : Array.isArray(value) ? value : [value];
+export function parseWindowsSnapshot(stdout: string): WindowsSnapshot {
+  const parsed = JSON.parse(stdout || "{}") as {
+    p?: Rows<{ p: number; q: number; c: number; l: string | null }>;
+    n?: Rows<{ o: number; t: number; a: string }>;
+  };
+  return {
+    processes: rows(parsed.p).map((row) => ({
+      pid: row.p,
+      parent: row.q,
+      created: row.c,
+      command: row.l ?? "",
+    })),
+    listeners: new Map(
+      rows(parsed.n)
+        .filter((row) => row.a === "127.0.0.1" || row.a === "0.0.0.0")
+        // The loopback listener is the one a health check reaches.
+        .sort(
+          (a, b) => Number(a.a === "127.0.0.1") - Number(b.a === "127.0.0.1"),
+        )
+        .map((row) => [row.t, row.o]),
+    ),
+  };
+}
+export async function windowsSnapshot(): Promise<WindowsSnapshot> {
   const result = await runProcess(
     "powershell.exe",
     ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_PROCESSES],
@@ -57,15 +98,22 @@ export async function windowsProcesses(): Promise<WindowsProcess[]> {
   );
   if (result.code !== 0)
     throw new Error("Native processes could not be enumerated.");
-  const rows = JSON.parse(result.stdout || "[]") as
-    | { p: number; q: number; c: number; l: string }
-    | { p: number; q: number; c: number; l: string }[];
-  return (Array.isArray(rows) ? rows : [rows]).map((row) => ({
-    pid: row.p,
-    parent: row.q,
-    created: row.c,
-    command: row.l ?? "",
-  }));
+  return parseWindowsSnapshot(result.stdout);
+}
+export async function windowsProcesses(): Promise<WindowsProcess[]> {
+  return (await windowsSnapshot()).processes;
+}
+/**
+ * The PowerShell a supervisor starts to take this snapshot is its own child.
+ * Counted as a service process, it kept every Windows supervisor alive after
+ * its service died, so the record still claimed a running service. Releases
+ * before this one ran the same query, so it is recognized by its script.
+ */
+function processInspection(candidate: WindowsProcess): boolean {
+  return (
+    /\bpowershell(?:\.exe)?\b/i.test(candidate.command) &&
+    candidate.command.includes("Get-CimInstance Win32_Process")
+  );
 }
 /** The supervisor holding the lease and everything it started, alive now. */
 export function windowsLeaseTree(
@@ -83,6 +131,7 @@ export function windowsLeaseTree(
       if (
         candidate.parent === parent.pid &&
         candidate.created >= parent.created &&
+        !processInspection(candidate) &&
         !tree.includes(candidate)
       )
         tree.push(candidate);
