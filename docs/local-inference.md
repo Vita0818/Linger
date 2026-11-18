@@ -58,6 +58,39 @@ memory is busy, see [Hardware compatibility](https://docs.heylinger.com/hardware
 
 Once the plan is approved, each model counts as installed only after it answers a real question.
 
+## Minimum hardware
+
+Local models run on a GPU, and Linger offers setup only above these floors.
+There is no CPU-only mode: below them, or without a supported GPU, a Computer
+shows `unsupported_hardware` and its agents use cloud models.
+
+| GPU path      | Platform         | Minimum memory        |
+| ------------- | ---------------- | --------------------- |
+| Apple silicon | macOS            | 16 GiB unified memory |
+| NVIDIA GPU    | Windows or Linux | 8 GiB VRAM            |
+
+On a Mac, Metal runs the model in unified memory, which the CPU and the GPU
+share, so it counts as GPU memory. The floors decide only whether setup is
+offered; after setup, the localmodels tool checks each model against the
+memory free at that moment.
+
+## Set up local models on a Computer
+
+How to turn on local models depends on how the Computer was installed:
+
+- [Requirements](https://docs.heylinger.com/local-models/requirements)
+- [The desktop app](https://docs.heylinger.com/local-models/desktop), on a
+  team server or with Quick Install
+- [The CLI](https://docs.heylinger.com/local-models/cli)
+- [Containers with a GPU passed through](https://docs.heylinger.com/local-models/containers)
+- [Models served by another machine](https://docs.heylinger.com/local-models/remote)
+- [Troubleshooting by status](https://docs.heylinger.com/local-models/troubleshooting)
+
+A Computer that cannot report local models because it is outdated needs
+[an update](https://docs.heylinger.com/install/update-computer), or, if it was
+installed before the Linger rename,
+[a one-time reinstall](https://docs.heylinger.com/install/reinstall-legacy).
+
 ## Inference engines
 
 Inference is built on PolyStrata: each token of a mixture-of-experts model uses only
