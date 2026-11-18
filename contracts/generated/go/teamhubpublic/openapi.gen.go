@@ -1943,6 +1943,72 @@ func (e LocalComputerStatus) Valid() bool {
 	}
 }
 
+// Defines values for LocalComputerAcceleratorGpuVendor.
+const (
+	LocalComputerGpuVendorAmd    LocalComputerAcceleratorGpuVendor = "amd"
+	LocalComputerGpuVendorApple  LocalComputerAcceleratorGpuVendor = "apple"
+	LocalComputerGpuVendorIntel  LocalComputerAcceleratorGpuVendor = "intel"
+	LocalComputerGpuVendorNvidia LocalComputerAcceleratorGpuVendor = "nvidia"
+	LocalComputerGpuVendorOther  LocalComputerAcceleratorGpuVendor = "other"
+)
+
+// Valid indicates whether the value is a known member of the LocalComputerAcceleratorGpuVendor enum.
+func (e LocalComputerAcceleratorGpuVendor) Valid() bool {
+	switch e {
+	case LocalComputerGpuVendorAmd:
+		return true
+	case LocalComputerGpuVendorApple:
+		return true
+	case LocalComputerGpuVendorIntel:
+		return true
+	case LocalComputerGpuVendorNvidia:
+		return true
+	case LocalComputerGpuVendorOther:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LocalComputerAcceleratorsProbe.
+const (
+	LocalComputerAcceleratorProbeFailed LocalComputerAcceleratorsProbe = "failed"
+	LocalComputerAcceleratorProbeOk     LocalComputerAcceleratorsProbe = "ok"
+)
+
+// Valid indicates whether the value is a known member of the LocalComputerAcceleratorsProbe enum.
+func (e LocalComputerAcceleratorsProbe) Valid() bool {
+	switch e {
+	case LocalComputerAcceleratorProbeFailed:
+		return true
+	case LocalComputerAcceleratorProbeOk:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LocalComputerInstallKind.
+const (
+	LocalComputerInstallKindCli       LocalComputerInstallKind = "cli"
+	LocalComputerInstallKindContainer LocalComputerInstallKind = "container"
+	LocalComputerInstallKindDesktop   LocalComputerInstallKind = "desktop"
+)
+
+// Valid indicates whether the value is a known member of the LocalComputerInstallKind enum.
+func (e LocalComputerInstallKind) Valid() bool {
+	switch e {
+	case LocalComputerInstallKindCli:
+		return true
+	case LocalComputerInstallKindContainer:
+		return true
+	case LocalComputerInstallKindDesktop:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for LocalComputerWorkspaceGrantMode.
 const (
 	ReadOnly       LocalComputerWorkspaceGrantMode = "read-only"
@@ -2354,6 +2420,27 @@ func (e LocalModelState) Valid() bool {
 	}
 }
 
+// Defines values for LocalModelsComputerPlatform.
+const (
+	LocalModelsComputerPlatformDarwin LocalModelsComputerPlatform = "darwin"
+	LocalModelsComputerPlatformLinux  LocalModelsComputerPlatform = "linux"
+	LocalModelsComputerPlatformWin32  LocalModelsComputerPlatform = "win32"
+)
+
+// Valid indicates whether the value is a known member of the LocalModelsComputerPlatform enum.
+func (e LocalModelsComputerPlatform) Valid() bool {
+	switch e {
+	case LocalModelsComputerPlatformDarwin:
+		return true
+	case LocalModelsComputerPlatformLinux:
+		return true
+	case LocalModelsComputerPlatformWin32:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for LocalModelsComputerStatus.
 const (
 	LocalModelsComputerOffline LocalModelsComputerStatus = "offline"
@@ -2417,6 +2504,120 @@ func (e LocalModelsErrorCode) Valid() bool {
 	case LocalModelsErrorCodeLOCALMODELSUNAVAILABLE:
 		return true
 	case LocalModelsErrorCodeLOCALMODELUNKNOWN:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LocalModelsReadinessReason.
+const (
+	LocalModelsReadinessDaemonLegacy        LocalModelsReadinessReason = "DAEMON_LEGACY"
+	LocalModelsReadinessDaemonUnsupported   LocalModelsReadinessReason = "DAEMON_UNSUPPORTED"
+	LocalModelsReadinessDiskInsufficient    LocalModelsReadinessReason = "DISK_INSUFFICIENT"
+	LocalModelsReadinessHardwareUnknown     LocalModelsReadinessReason = "HARDWARE_UNKNOWN"
+	LocalModelsReadinessMemoryInsufficient  LocalModelsReadinessReason = "MEMORY_INSUFFICIENT"
+	LocalModelsReadinessNoSupportedGpu      LocalModelsReadinessReason = "NO_SUPPORTED_GPU"
+	LocalModelsReadinessNotReportedReason   LocalModelsReadinessReason = "NOT_REPORTED"
+	LocalModelsReadinessPlatformUnsupported LocalModelsReadinessReason = "PLATFORM_UNSUPPORTED"
+	LocalModelsReadinessSetupAvailable      LocalModelsReadinessReason = "SETUP_AVAILABLE"
+	LocalModelsReadinessToolFailed          LocalModelsReadinessReason = "TOOL_FAILED"
+	LocalModelsReadinessUpdateFailed        LocalModelsReadinessReason = "UPDATE_FAILED"
+	LocalModelsReadinessUpdatePending       LocalModelsReadinessReason = "UPDATE_PENDING"
+)
+
+// Valid indicates whether the value is a known member of the LocalModelsReadinessReason enum.
+func (e LocalModelsReadinessReason) Valid() bool {
+	switch e {
+	case LocalModelsReadinessDaemonLegacy:
+		return true
+	case LocalModelsReadinessDaemonUnsupported:
+		return true
+	case LocalModelsReadinessDiskInsufficient:
+		return true
+	case LocalModelsReadinessHardwareUnknown:
+		return true
+	case LocalModelsReadinessMemoryInsufficient:
+		return true
+	case LocalModelsReadinessNoSupportedGpu:
+		return true
+	case LocalModelsReadinessNotReportedReason:
+		return true
+	case LocalModelsReadinessPlatformUnsupported:
+		return true
+	case LocalModelsReadinessSetupAvailable:
+		return true
+	case LocalModelsReadinessToolFailed:
+		return true
+	case LocalModelsReadinessUpdateFailed:
+		return true
+	case LocalModelsReadinessUpdatePending:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LocalModelsReadinessState.
+const (
+	LocalModelsReadinessChecking            LocalModelsReadinessState = "checking"
+	LocalModelsReadinessLoaded              LocalModelsReadinessState = "loaded"
+	LocalModelsReadinessManagedElsewhere    LocalModelsReadinessState = "managed_elsewhere"
+	LocalModelsReadinessNeedsAttention      LocalModelsReadinessState = "needs_attention"
+	LocalModelsReadinessNeedsReinstall      LocalModelsReadinessState = "needs_reinstall"
+	LocalModelsReadinessNeedsUpdate         LocalModelsReadinessState = "needs_update"
+	LocalModelsReadinessNotReported         LocalModelsReadinessState = "not_reported"
+	LocalModelsReadinessNotSetUp            LocalModelsReadinessState = "not_set_up"
+	LocalModelsReadinessReady               LocalModelsReadinessState = "ready"
+	LocalModelsReadinessUnsupportedHardware LocalModelsReadinessState = "unsupported_hardware"
+	LocalModelsReadinessWorking             LocalModelsReadinessState = "working"
+)
+
+// Valid indicates whether the value is a known member of the LocalModelsReadinessState enum.
+func (e LocalModelsReadinessState) Valid() bool {
+	switch e {
+	case LocalModelsReadinessChecking:
+		return true
+	case LocalModelsReadinessLoaded:
+		return true
+	case LocalModelsReadinessManagedElsewhere:
+		return true
+	case LocalModelsReadinessNeedsAttention:
+		return true
+	case LocalModelsReadinessNeedsReinstall:
+		return true
+	case LocalModelsReadinessNeedsUpdate:
+		return true
+	case LocalModelsReadinessNotReported:
+		return true
+	case LocalModelsReadinessNotSetUp:
+		return true
+	case LocalModelsReadinessReady:
+		return true
+	case LocalModelsReadinessUnsupportedHardware:
+		return true
+	case LocalModelsReadinessWorking:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LocalModelsSetupPath.
+const (
+	LocalModelsSetupPathAppleSilicon LocalModelsSetupPath = "apple_silicon"
+	LocalModelsSetupPathNvidia       LocalModelsSetupPath = "nvidia"
+	LocalModelsSetupPathUnknown      LocalModelsSetupPath = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the LocalModelsSetupPath enum.
+func (e LocalModelsSetupPath) Valid() bool {
+	switch e {
+	case LocalModelsSetupPathAppleSilicon:
+		return true
+	case LocalModelsSetupPathNvidia:
+		return true
+	case LocalModelsSetupPathUnknown:
 		return true
 	default:
 		return false
@@ -6093,7 +6294,8 @@ type LocalComputer struct {
 	DisplayName   string  `json:"display_name"`
 
 	// LastSeenAt UTC timestamp in RFC 3339 format with an explicit offset.
-	LastSeenAt *Timestamp `json:"last_seen_at,omitempty"`
+	LastSeenAt           *Timestamp            `json:"last_seen_at,omitempty"`
+	LocalModelsReadiness *LocalModelsReadiness `json:"local_models_readiness,omitempty"`
 
 	// Platform Last native host platform reported by this Computer. Omission preserves an existing observation; unknown legacy Computers omit this field.
 	Platform *LocalComputerPlatform `json:"platform,omitempty"`
@@ -6115,6 +6317,33 @@ type LocalComputerPlatform string
 
 // LocalComputerStatus defines model for LocalComputer.Status.
 type LocalComputerStatus string
+
+// LocalComputerAcceleratorGpu defines model for LocalComputerAcceleratorGpu.
+type LocalComputerAcceleratorGpu struct {
+	// MemoryBytes Dedicated GPU memory; absent when the probe can't read it.
+	MemoryBytes *int64 `json:"memory_bytes,omitempty"`
+
+	// Name Display only; never matched on.
+	Name   string                            `json:"name"`
+	Vendor LocalComputerAcceleratorGpuVendor `json:"vendor"`
+}
+
+// LocalComputerAcceleratorGpuVendor defines model for LocalComputerAcceleratorGpu.Vendor.
+type LocalComputerAcceleratorGpuVendor string
+
+// LocalComputerAccelerators Hardware the Computer probed without the localmodels tool. probe failed means the lists say nothing about the hardware.
+type LocalComputerAccelerators struct {
+	AppleSilicon  bool                           `json:"apple_silicon"`
+	Gpus          []LocalComputerAcceleratorGpu  `json:"gpus"`
+	Probe         LocalComputerAcceleratorsProbe `json:"probe"`
+	RamTotalBytes int64                          `json:"ram_total_bytes"`
+
+	// UnifiedMemoryBytes Present only on Apple silicon; the memory the CPU and GPU share.
+	UnifiedMemoryBytes *int64 `json:"unified_memory_bytes,omitempty"`
+}
+
+// LocalComputerAcceleratorsProbe defines model for LocalComputerAccelerators.Probe.
+type LocalComputerAcceleratorsProbe string
 
 // LocalComputerCredentialBundle defines model for LocalComputerCredentialBundle.
 type LocalComputerCredentialBundle struct {
@@ -6160,6 +6389,9 @@ type LocalComputerEnrollmentExchangeRequest struct {
 	CodeVerifier      *string `json:"code_verifier,omitempty"`
 	RedirectUri       string  `json:"redirect_uri"`
 }
+
+// LocalComputerInstallKind How the Computer was installed: desktop (the desktop app runs it), cli (the installer on a host), or container (a container runtime).
+type LocalComputerInstallKind string
 
 // LocalComputerPage defines model for LocalComputerPage.
 type LocalComputerPage struct {
@@ -6437,22 +6669,45 @@ type LocalModelView struct {
 	UsedBy []LocalModelUser `json:"used_by"`
 }
 
-// LocalModelsComputer defines model for LocalModelsComputer.
+// LocalModelsComputer accelerators is present only for the Computer owner.
 type LocalModelsComputer struct {
+	// Accelerators Hardware the Computer probed without the localmodels tool. probe failed means the lists say nothing about the hardware.
+	Accelerators *LocalComputerAccelerators `json:"accelerators,omitempty"`
+
 	// ComputerId Opaque, case-sensitive identifier. Clients must not infer type or time from it.
-	ComputerId  Id     `json:"computer_id"`
-	DisplayName string `json:"display_name"`
+	ComputerId    Id      `json:"computer_id"`
+	DaemonVersion *string `json:"daemon_version,omitempty"`
+	DisplayName   string  `json:"display_name"`
 
 	// Host Hardware and software of the Computer as localmodels reports it.
 	Host *LocalModelHost `json:"host,omitempty"`
 
+	// InstallKind How the Computer was installed: desktop (the desktop app runs it), cli (the installer on a host), or container (a container runtime).
+	InstallKind *LocalComputerInstallKind `json:"install_kind,omitempty"`
+
 	// LastSeenAt UTC timestamp in RFC 3339 format with an explicit offset.
-	LastSeenAt *Timestamp                `json:"last_seen_at,omitempty"`
-	Status     LocalModelsComputerStatus `json:"status"`
+	LastSeenAt *Timestamp `json:"last_seen_at,omitempty"`
+
+	// ManagedBy The machine that serves this Computer's models when its local_models mode is remote. computer_id names a Linger Computer when the config does.
+	ManagedBy *LocalModelsManagedBy        `json:"managed_by,omitempty"`
+	Owner     *LocalModelsComputerOwner    `json:"owner,omitempty"`
+	Platform  *LocalModelsComputerPlatform `json:"platform,omitempty"`
+	Readiness *LocalModelsReadiness        `json:"readiness,omitempty"`
+	Status    LocalModelsComputerStatus    `json:"status"`
 }
+
+// LocalModelsComputerPlatform defines model for LocalModelsComputer.Platform.
+type LocalModelsComputerPlatform string
 
 // LocalModelsComputerStatus defines model for LocalModelsComputer.Status.
 type LocalModelsComputerStatus string
+
+// LocalModelsComputerOwner defines model for LocalModelsComputerOwner.
+type LocalModelsComputerOwner struct {
+	// ActorId Opaque, case-sensitive identifier. Clients must not infer type or time from it.
+	ActorId     Id     `json:"actor_id"`
+	DisplayName string `json:"display_name"`
+}
 
 // LocalModelsError The common error body with error.code narrowed to LocalModelsErrorCode.
 type LocalModelsError struct {
@@ -6475,11 +6730,46 @@ type LocalModelsErrorResponse struct {
 	Error LocalModelsError `json:"error"`
 }
 
+// LocalModelsManagedBy The machine that serves this Computer's models when its local_models mode is remote. computer_id names a Linger Computer when the config does.
+type LocalModelsManagedBy struct {
+	// ComputerId Opaque, case-sensitive identifier. Clients must not infer type or time from it.
+	ComputerId *Id `json:"computer_id,omitempty"`
+
+	// Label Display only, from the Computer's config.
+	Label string `json:"label"`
+}
+
+// LocalModelsReadiness defines model for LocalModelsReadiness.
+type LocalModelsReadiness struct {
+	// EnableCommand The Computer's release ships the local-models enable command, so clients may show it; otherwise they link the manual setup steps.
+	EnableCommand bool `json:"enable_command"`
+
+	// Reason Why the Computer is in its readiness state. DAEMON_UNSUPPORTED: the Computer release can no longer connect. DAEMON_LEGACY: a release from before the Linger rename, which can't update itself. UPDATE_FAILED: its update failed or has been pending too long. UPDATE_PENDING: it is updating itself. NOT_REPORTED: no snapshot ever. TOOL_FAILED: the tool did not answer. SETUP_AVAILABLE: the hardware meets the floor. HARDWARE_UNKNOWN: the Computer has not reported its hardware. NO_SUPPORTED_GPU: neither Apple silicon nor an NVIDIA GPU. MEMORY_INSUFFICIENT: the GPU or unified memory is below the floor, or no model fits it. DISK_INSUFFICIENT: no model fits the free disk. PLATFORM_UNSUPPORTED: the platform has no GPU path, such as an Intel Mac.
+	Reason *LocalModelsReadinessReason `json:"reason,omitempty"`
+
+	// SetupPath The guided setup that applies, from the Computer's accelerators and platform. apple_silicon runs models on unified memory through Metal; it is a GPU path, never a CPU one.
+	SetupPath *LocalModelsSetupPath `json:"setup_path,omitempty"`
+
+	// State One Computer's local-models readiness, computed by TeamHub; the first matching rule wins. Offline is not a state: an offline Computer keeps its last readiness and the client shows it muted. needs_reinstall: the Computer can't update itself. needs_update: it is updating itself and reports no library yet. managed_elsewhere: its models are served by another machine. checking: connected moments ago and no snapshot yet. not_reported: no snapshot ever. needs_attention: the tool failed. not_set_up: the tool is not installed. unsupported_hardware: no supported GPU path (an NVIDIA GPU with enough memory, or Apple silicon with enough unified memory); there is no CPU-only mode. working: a model is downloading or loading. loaded: one or more models are loaded. ready: the library is usable and nothing is loaded.
+	State LocalModelsReadinessState `json:"state"`
+}
+
+// LocalModelsReadinessReason Why the Computer is in its readiness state. DAEMON_UNSUPPORTED: the Computer release can no longer connect. DAEMON_LEGACY: a release from before the Linger rename, which can't update itself. UPDATE_FAILED: its update failed or has been pending too long. UPDATE_PENDING: it is updating itself. NOT_REPORTED: no snapshot ever. TOOL_FAILED: the tool did not answer. SETUP_AVAILABLE: the hardware meets the floor. HARDWARE_UNKNOWN: the Computer has not reported its hardware. NO_SUPPORTED_GPU: neither Apple silicon nor an NVIDIA GPU. MEMORY_INSUFFICIENT: the GPU or unified memory is below the floor, or no model fits it. DISK_INSUFFICIENT: no model fits the free disk. PLATFORM_UNSUPPORTED: the platform has no GPU path, such as an Intel Mac.
+type LocalModelsReadinessReason string
+
+// LocalModelsReadinessState One Computer's local-models readiness, computed by TeamHub; the first matching rule wins. Offline is not a state: an offline Computer keeps its last readiness and the client shows it muted. needs_reinstall: the Computer can't update itself. needs_update: it is updating itself and reports no library yet. managed_elsewhere: its models are served by another machine. checking: connected moments ago and no snapshot yet. not_reported: no snapshot ever. needs_attention: the tool failed. not_set_up: the tool is not installed. unsupported_hardware: no supported GPU path (an NVIDIA GPU with enough memory, or Apple silicon with enough unified memory); there is no CPU-only mode. working: a model is downloading or loading. loaded: one or more models are loaded. ready: the library is usable and nothing is loaded.
+type LocalModelsReadinessState string
+
+// LocalModelsSetupPath The guided setup that applies, from the Computer's accelerators and platform. apple_silicon runs models on unified memory through Metal; it is a GPU path, never a CPU one.
+type LocalModelsSetupPath string
+
 // LocalModelsView One Computer's model library as last reported. Only the Computer owner can act (viewer_is_owner); other Tenant members who can see the Computer read it.
 type LocalModelsView struct {
-	Available bool                `json:"available"`
-	Computer  LocalModelsComputer `json:"computer"`
-	Models    []LocalModelView    `json:"models"`
+	Available bool `json:"available"`
+
+	// Computer accelerators is present only for the Computer owner.
+	Computer LocalModelsComputer `json:"computer"`
+	Models   []LocalModelView    `json:"models"`
 
 	// ObservedAt UTC timestamp in RFC 3339 format with an explicit offset.
 	ObservedAt    *Timestamp                        `json:"observed_at,omitempty"`

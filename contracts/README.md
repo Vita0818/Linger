@@ -112,3 +112,13 @@ Progress and outcomes travel back only as snapshots:
    with runtime `pi` whose runtime model is the model's `pi_model`. localmodels
    reports `pi_model` for every model on the Computer, loaded or not, so an
    idle model still lists the Agents that will run on it.
+
+Readiness is TeamHub's single answer to "can this Computer run local models,
+and what should its owner do next": `LocalModelsReadiness` (`state`, `reason`,
+`setup_path`, `enable_command`). It rides on `LocalModelsComputer` and on the
+Computers page's `LocalComputer.local_models_readiness`, so no client derives
+version gates or hardware floors itself. The hardware facts behind it come
+from `LocalComputerProfile`, which a Computer reports without the tool.
+`fixtures/local-models/readiness.json` holds one valid example per readiness
+rule, and `tests/local-models-readiness.contract.test.ts` checks that every
+state and reason has one.

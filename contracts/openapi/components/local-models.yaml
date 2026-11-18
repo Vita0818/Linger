@@ -765,7 +765,307 @@ components:
           maxItems: 1000
           items:
             $ref: "#/components/schemas/LocalModelUser"
+    LocalModelsReadinessState:
+      description: >-
+        One Computer's local-models readiness, computed by TeamHub; the first
+        matching rule wins. Offline is not a state: an offline Computer keeps
+        its last readiness and the client shows it muted. needs_reinstall: the
+        Computer can't update itself. needs_update: it is updating itself and
+        reports no library yet. managed_elsewhere: its models are served by
+        another machine. checking: connected moments ago and no snapshot yet.
+        not_reported: no snapshot ever. needs_attention: the tool failed.
+        not_set_up: the tool is not installed. unsupported_hardware: no
+        supported GPU path (an NVIDIA GPU with enough memory, or Apple silicon
+        with enough unified memory); there is no CPU-only mode. working: a
+        model is downloading or loading. loaded: one or more models are loaded.
+        ready: the library is usable and nothing is loaded.
+      type: string
+      enum:
+        - loaded
+        - working
+        - ready
+        - not_set_up
+        - needs_update
+        - needs_reinstall
+        - needs_attention
+        - unsupported_hardware
+        - managed_elsewhere
+        - checking
+        - not_reported
+      x-enum-varnames:
+        - LocalModelsReadinessLoaded
+        - LocalModelsReadinessWorking
+        - LocalModelsReadinessReady
+        - LocalModelsReadinessNotSetUp
+        - LocalModelsReadinessNeedsUpdate
+        - LocalModelsReadinessNeedsReinstall
+        - LocalModelsReadinessNeedsAttention
+        - LocalModelsReadinessUnsupportedHardware
+        - LocalModelsReadinessManagedElsewhere
+        - LocalModelsReadinessChecking
+        - LocalModelsReadinessNotReported
+    LocalModelsReadinessReason:
+      description: >-
+        Why the Computer is in its readiness state. DAEMON_UNSUPPORTED: the
+        Computer release can no longer connect. DAEMON_LEGACY: a release from
+        before the Linger rename, which can't update itself. UPDATE_FAILED:
+        its update failed or has been pending too long. UPDATE_PENDING: it is
+        updating itself. NOT_REPORTED: no snapshot ever. TOOL_FAILED: the tool
+        did not answer. SETUP_AVAILABLE: the hardware meets the floor.
+        HARDWARE_UNKNOWN: the Computer has not reported its hardware.
+        NO_SUPPORTED_GPU: neither Apple silicon nor an NVIDIA GPU.
+        MEMORY_INSUFFICIENT: the GPU or unified memory is below the floor, or
+        no model fits it. DISK_INSUFFICIENT: no model fits the free disk.
+        PLATFORM_UNSUPPORTED: the platform has no GPU path, such as an Intel
+        Mac.
+      type: string
+      enum:
+        - DAEMON_UNSUPPORTED
+        - DAEMON_LEGACY
+        - UPDATE_FAILED
+        - UPDATE_PENDING
+        - NOT_REPORTED
+        - TOOL_FAILED
+        - SETUP_AVAILABLE
+        - HARDWARE_UNKNOWN
+        - NO_SUPPORTED_GPU
+        - MEMORY_INSUFFICIENT
+        - DISK_INSUFFICIENT
+        - PLATFORM_UNSUPPORTED
+      x-enum-varnames:
+        - LocalModelsReadinessDaemonUnsupported
+        - LocalModelsReadinessDaemonLegacy
+        - LocalModelsReadinessUpdateFailed
+        - LocalModelsReadinessUpdatePending
+        - LocalModelsReadinessNotReportedReason
+        - LocalModelsReadinessToolFailed
+        - LocalModelsReadinessSetupAvailable
+        - LocalModelsReadinessHardwareUnknown
+        - LocalModelsReadinessNoSupportedGpu
+        - LocalModelsReadinessMemoryInsufficient
+        - LocalModelsReadinessDiskInsufficient
+        - LocalModelsReadinessPlatformUnsupported
+    LocalModelsSetupPath:
+      description: >-
+        The guided setup that applies, from the Computer's accelerators and
+        platform. apple_silicon runs models on unified memory through Metal;
+        it is a GPU path, never a CPU one.
+      type: string
+      enum: [apple_silicon, nvidia, unknown]
+      x-enum-varnames:
+        [
+          LocalModelsSetupPathAppleSilicon,
+          LocalModelsSetupPathNvidia,
+          LocalModelsSetupPathUnknown,
+        ]
+    LocalModelsReadiness:
+      type: object
+      additionalProperties: false
+      required: [state, enable_command]
+      properties:
+        state:
+          $ref: "#/components/schemas/LocalModelsReadinessState"
+        reason:
+          $ref: "#/components/schemas/LocalModelsReadinessReason"
+        setup_path:
+          $ref: "#/components/schemas/LocalModelsSetupPath"
+        enable_command:
+          description: >-
+            The Computer's release ships the local-models enable command, so
+            clients may show it; otherwise they link the manual setup steps.
+          type: boolean
+    LocalComputerInstallKind:
+      description: >-
+        How the Computer was installed: desktop (the desktop app runs it), cli
+        (the installer on a host), or container (a container runtime).
+      type: string
+      enum: [desktop, cli, container]
+      x-enum-varnames:
+        [
+          LocalComputerInstallKindDesktop,
+          LocalComputerInstallKindCli,
+          LocalComputerInstallKindContainer,
+        ]
+    LocalComputerAcceleratorGpu:
+      type: object
+      additionalProperties: false
+      required: [vendor, name]
+      properties:
+        vendor:
+          type: string
+          enum: [nvidia, amd, intel, apple, other]
+          x-enum-varnames:
+            [
+              LocalComputerGpuVendorNvidia,
+              LocalComputerGpuVendorAmd,
+              LocalComputerGpuVendorIntel,
+              LocalComputerGpuVendorApple,
+              LocalComputerGpuVendorOther,
+            ]
+        name:
+          description: Display only; never matched on.
+          type: string
+          minLength: 1
+          maxLength: 200
+        memory_bytes:
+          description: Dedicated GPU memory; absent when the probe can't read it.
+          type: integer
+          format: int64
+          minimum: 0
+    LocalComputerAccelerators:
+      description: >-
+        Hardware the Computer probed without the localmodels tool. probe
+        failed means the lists say nothing about the hardware.
+      type: object
+      additionalProperties: false
+      required: [probe, ram_total_bytes, apple_silicon, gpus]
+      properties:
+        probe:
+          type: string
+          enum: [ok, failed]
+          x-enum-varnames:
+            [
+              LocalComputerAcceleratorProbeOk,
+              LocalComputerAcceleratorProbeFailed,
+            ]
+        ram_total_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        apple_silicon:
+          type: boolean
+        unified_memory_bytes:
+          description: Present only on Apple silicon; the memory the CPU and GPU share.
+          type: integer
+          format: int64
+          minimum: 0
+        gpus:
+          type: array
+          maxItems: 64
+          items:
+            $ref: "#/components/schemas/LocalComputerAcceleratorGpu"
+    LocalModelsManagedBy:
+      description: >-
+        The machine that serves this Computer's models when its local_models
+        mode is remote. computer_id names a Linger Computer when the config
+        does.
+      type: object
+      additionalProperties: false
+      required: [label]
+      properties:
+        label:
+          description: Display only, from the Computer's config.
+          type: string
+          minLength: 1
+          maxLength: 120
+        computer_id:
+          $ref: "./common.yaml#/components/schemas/Id"
+    LocalComputerProfileLocalModels:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      properties:
+        mode:
+          description: >-
+            none: the config names no localmodels tool. local: the tool runs on
+            this Computer. remote: another machine serves the models.
+          type: string
+          enum: [none, local, remote]
+          x-enum-varnames:
+            [
+              LocalComputerLocalModelsModeNone,
+              LocalComputerLocalModelsModeLocal,
+              LocalComputerLocalModelsModeRemote,
+            ]
+        managed:
+          description: The kit was installed by local-models enable, which keeps it upgraded.
+          type: boolean
+        kit_version:
+          type: string
+          minLength: 1
+          maxLength: 64
+        managed_by:
+          $ref: "#/components/schemas/LocalModelsManagedBy"
+    LocalComputerProfileUpdate:
+      description: The Computer's last self-update attempt. A desktop Computer reports idle.
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [idle, staging, failed]
+          x-enum-varnames:
+            [
+              LocalComputerUpdateIdle,
+              LocalComputerUpdateStaging,
+              LocalComputerUpdateFailed,
+            ]
+        attempted_at:
+          $ref: "./common.yaml#/components/schemas/Timestamp"
+        error_code:
+          description: Present only when failed.
+          type: string
+          enum:
+            - ARCHIVE_INVALID
+            - DOWNLOAD_FAILED
+            - VERIFY_FAILED
+            - STAGE_FAILED
+            - ACTIVATE_FAILED
+          x-enum-varnames:
+            - LocalComputerUpdateArchiveInvalid
+            - LocalComputerUpdateDownloadFailed
+            - LocalComputerUpdateVerifyFailed
+            - LocalComputerUpdateStageFailed
+            - LocalComputerUpdateActivateFailed
+        detail:
+          description: Diagnostic text for display; never matched on.
+          type: string
+          maxLength: 4000
+    LocalComputerProfile:
+      description: >-
+        Facts the Computer reports about itself without the localmodels tool,
+        from runner.computer_profile.
+      type: object
+      additionalProperties: false
+      required: [install_kind, accelerators, local_models, update]
+      properties:
+        install_kind:
+          $ref: "#/components/schemas/LocalComputerInstallKind"
+        accelerators:
+          $ref: "#/components/schemas/LocalComputerAccelerators"
+        local_models:
+          $ref: "#/components/schemas/LocalComputerProfileLocalModels"
+        update:
+          $ref: "#/components/schemas/LocalComputerProfileUpdate"
+    RecordLocalComputerProfileRequest:
+      description: >-
+        The latest runner.computer_profile of one Computer. TeamHub keeps only
+        the latest per Computer.
+      type: object
+      additionalProperties: false
+      required: [computer_id, observed_at, profile]
+      properties:
+        computer_id:
+          $ref: "./common.yaml#/components/schemas/Id"
+        observed_at:
+          $ref: "./common.yaml#/components/schemas/Timestamp"
+        profile:
+          $ref: "#/components/schemas/LocalComputerProfile"
+    LocalModelsComputerOwner:
+      type: object
+      additionalProperties: false
+      required: [actor_id, display_name]
+      properties:
+        actor_id:
+          $ref: "./common.yaml#/components/schemas/Id"
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 120
     LocalModelsComputer:
+      description: >-
+        accelerators is present only for the Computer owner.
       type: object
       additionalProperties: false
       required: [computer_id, display_name, status]
@@ -786,6 +1086,147 @@ components:
         host:
           $ref: "#/components/schemas/LocalModelHost"
           description: From the last snapshot that carried one.
+        owner:
+          $ref: "#/components/schemas/LocalModelsComputerOwner"
+        platform:
+          type: string
+          enum: [darwin, linux, win32]
+          x-enum-varnames:
+            [
+              LocalModelsComputerPlatformDarwin,
+              LocalModelsComputerPlatformLinux,
+              LocalModelsComputerPlatformWin32,
+            ]
+        daemon_version:
+          type: string
+          minLength: 1
+          maxLength: 80
+        install_kind:
+          $ref: "#/components/schemas/LocalComputerInstallKind"
+        readiness:
+          $ref: "#/components/schemas/LocalModelsReadiness"
+        accelerators:
+          $ref: "#/components/schemas/LocalComputerAccelerators"
+        managed_by:
+          $ref: "#/components/schemas/LocalModelsManagedBy"
+    LocalModelsComputerCounts:
+      type: object
+      additionalProperties: false
+      required: [loaded, on_disk, working]
+      properties:
+        loaded:
+          type: integer
+          minimum: 0
+        on_disk:
+          description: Models on disk, loaded or not.
+          type: integer
+          minimum: 0
+        working:
+          description: Models downloading or loading.
+          type: integer
+          minimum: 0
+    LocalModelsComputerMemory:
+      description: Memory in use across the Computer's pools, from its last snapshot.
+      type: object
+      additionalProperties: false
+      required: [used_bytes, total_bytes, kind]
+      properties:
+        used_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        total_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        kind:
+          type: string
+          enum: [gpu, unified]
+          x-enum-varnames:
+            [LocalModelsComputerMemoryGpu, LocalModelsComputerMemoryUnified]
+    LocalModelsComputerSummary:
+      description: >-
+        One Computer in the local-models picker and overview. A row for
+        another member's Computer carries only its name, owner, status and
+        readiness; accelerators, counts, memory and versions are the owner's.
+      type: object
+      additionalProperties: false
+      required:
+        [computer_id, display_name, owner, viewer_is_owner, status, readiness]
+      properties:
+        computer_id:
+          $ref: "./common.yaml#/components/schemas/Id"
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        owner:
+          $ref: "#/components/schemas/LocalModelsComputerOwner"
+        viewer_is_owner:
+          type: boolean
+        status:
+          type: string
+          enum: [online, offline]
+          x-enum-varnames:
+            [
+              LocalModelsComputerSummaryOnline,
+              LocalModelsComputerSummaryOffline,
+            ]
+        last_seen_at:
+          $ref: "./common.yaml#/components/schemas/Timestamp"
+        platform:
+          type: string
+          enum: [darwin, linux, win32]
+          x-enum-varnames:
+            [
+              LocalModelsComputerSummaryPlatformDarwin,
+              LocalModelsComputerSummaryPlatformLinux,
+              LocalModelsComputerSummaryPlatformWin32,
+            ]
+        daemon_version:
+          type: string
+          minLength: 1
+          maxLength: 80
+        install_kind:
+          $ref: "#/components/schemas/LocalComputerInstallKind"
+        readiness:
+          $ref: "#/components/schemas/LocalModelsReadiness"
+        accelerators:
+          $ref: "#/components/schemas/LocalComputerAccelerators"
+        counts:
+          $ref: "#/components/schemas/LocalModelsComputerCounts"
+        memory:
+          $ref: "#/components/schemas/LocalModelsComputerMemory"
+        managed_by:
+          $ref: "#/components/schemas/LocalModelsManagedBy"
+        observed_at:
+          $ref: "./common.yaml#/components/schemas/Timestamp"
+          description: When the Computer observed its last snapshot.
+    LocalModelsComputerSummaryPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: "#/components/schemas/LocalModelsComputerSummary"
+    LocalModelsComputerScope:
+      description: >-
+        mine: the viewer's own Computers. space: also other members'
+        Computers, with the reduced row.
+      type: string
+      enum: [mine, space]
+      x-enum-varnames:
+        [LocalModelsComputerScopeMine, LocalModelsComputerScopeSpace]
+    LocalModelsRefreshAccepted:
+      type: object
+      additionalProperties: false
+      required: [computer_id]
+      properties:
+        computer_id:
+          $ref: "./common.yaml#/components/schemas/Id"
     LocalModelsViewUnavailableReason:
       type: object
       additionalProperties: false

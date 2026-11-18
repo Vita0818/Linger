@@ -2431,6 +2431,8 @@ export interface components {
       daemon_version: string;
       /** @description Computer release this deployment ships; omission keeps the last one. */
       recommended_version?: string;
+      /** @description The Computer runs this deployment's target release (its app sha256 matches). Omitted when the deployment ships no target release. */
+      release_current?: boolean;
     };
     /** @description An active Agent placed on the Computer; its Agent Runner should be ready there. */
     AgentRuntimeRunnerPlacement: {
@@ -2465,6 +2467,8 @@ export interface components {
       active_operations?: number;
       daemon_version?: string;
       recommended_version?: string;
+      /** @description The Computer runs this deployment's target release (its app sha256 matches). Omitted when the deployment ships no target release or the touch carries no release facts. */
+      release_current?: boolean;
     };
     AgentRuntimeLocalComputerCredentialRequest: {
       computer_id: components["schemas"]["Id"];

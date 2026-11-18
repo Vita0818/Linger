@@ -2945,7 +2945,10 @@ type ConnectAgentRuntimeLocalComputerRequest struct {
 	Platform        *ConnectAgentRuntimeLocalComputerRequestPlatform `json:"platform,omitempty"`
 
 	// RecommendedVersion Computer release this deployment ships; omission keeps the last one.
-	RecommendedVersion *string                                           `json:"recommended_version,omitempty"`
+	RecommendedVersion *string `json:"recommended_version,omitempty"`
+
+	// ReleaseCurrent The Computer runs this deployment's target release (its app sha256 matches). Omitted when the deployment ships no target release.
+	ReleaseCurrent     *bool                                             `json:"release_current,omitempty"`
 	RuntimeDiagnostics []map[string]interface{}                          `json:"runtime_diagnostics"`
 	Runtimes           []ConnectAgentRuntimeLocalComputerRequestRuntimes `json:"runtimes"`
 	SeenAt             time.Time                                         `json:"seen_at"`
@@ -4034,9 +4037,12 @@ type TouchAgentRuntimeLocalComputerRequest struct {
 	ActiveOperations *int `json:"active_operations,omitempty"`
 
 	// ComputerId Opaque, case-sensitive identifier. Clients must not infer type or time from it.
-	ComputerId         Id                                               `json:"computer_id"`
-	DaemonVersion      *string                                          `json:"daemon_version,omitempty"`
-	RecommendedVersion *string                                          `json:"recommended_version,omitempty"`
+	ComputerId         Id      `json:"computer_id"`
+	DaemonVersion      *string `json:"daemon_version,omitempty"`
+	RecommendedVersion *string `json:"recommended_version,omitempty"`
+
+	// ReleaseCurrent The Computer runs this deployment's target release (its app sha256 matches). Omitted when the deployment ships no target release or the touch carries no release facts.
+	ReleaseCurrent     *bool                                            `json:"release_current,omitempty"`
 	RuntimeDiagnostics *[]map[string]interface{}                        `json:"runtime_diagnostics,omitempty"`
 	Runtimes           *[]TouchAgentRuntimeLocalComputerRequestRuntimes `json:"runtimes,omitempty"`
 	SeenAt             time.Time                                        `json:"seen_at"`

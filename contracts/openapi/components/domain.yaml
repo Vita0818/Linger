@@ -317,6 +317,9 @@ components:
           maxItems: 100
           items:
             $ref: "#/components/schemas/LocalComputerWorkspaceGrant"
+        local_models_readiness:
+          $ref: "./local-models.yaml#/components/schemas/LocalModelsReadiness"
+          description: The same readiness the local-models summary carries, for the Computers page chip.
     LocalComputerPage:
       type: object
       additionalProperties: false

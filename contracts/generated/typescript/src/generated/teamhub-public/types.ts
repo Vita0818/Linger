@@ -4351,6 +4351,51 @@ export interface components {
       /** @enum {string} */
       mode: "read-only" | "workspace-write";
     };
+    /**
+     * @description One Computer's local-models readiness, computed by TeamHub; the first matching rule wins. Offline is not a state: an offline Computer keeps its last readiness and the client shows it muted. needs_reinstall: the Computer can't update itself. needs_update: it is updating itself and reports no library yet. managed_elsewhere: its models are served by another machine. checking: connected moments ago and no snapshot yet. not_reported: no snapshot ever. needs_attention: the tool failed. not_set_up: the tool is not installed. unsupported_hardware: no supported GPU path (an NVIDIA GPU with enough memory, or Apple silicon with enough unified memory); there is no CPU-only mode. working: a model is downloading or loading. loaded: one or more models are loaded. ready: the library is usable and nothing is loaded.
+     * @enum {string}
+     */
+    LocalModelsReadinessState:
+      | "loaded"
+      | "working"
+      | "ready"
+      | "not_set_up"
+      | "needs_update"
+      | "needs_reinstall"
+      | "needs_attention"
+      | "unsupported_hardware"
+      | "managed_elsewhere"
+      | "checking"
+      | "not_reported";
+    /**
+     * @description Why the Computer is in its readiness state. DAEMON_UNSUPPORTED: the Computer release can no longer connect. DAEMON_LEGACY: a release from before the Linger rename, which can't update itself. UPDATE_FAILED: its update failed or has been pending too long. UPDATE_PENDING: it is updating itself. NOT_REPORTED: no snapshot ever. TOOL_FAILED: the tool did not answer. SETUP_AVAILABLE: the hardware meets the floor. HARDWARE_UNKNOWN: the Computer has not reported its hardware. NO_SUPPORTED_GPU: neither Apple silicon nor an NVIDIA GPU. MEMORY_INSUFFICIENT: the GPU or unified memory is below the floor, or no model fits it. DISK_INSUFFICIENT: no model fits the free disk. PLATFORM_UNSUPPORTED: the platform has no GPU path, such as an Intel Mac.
+     * @enum {string}
+     */
+    LocalModelsReadinessReason:
+      | "DAEMON_UNSUPPORTED"
+      | "DAEMON_LEGACY"
+      | "UPDATE_FAILED"
+      | "UPDATE_PENDING"
+      | "NOT_REPORTED"
+      | "TOOL_FAILED"
+      | "SETUP_AVAILABLE"
+      | "HARDWARE_UNKNOWN"
+      | "NO_SUPPORTED_GPU"
+      | "MEMORY_INSUFFICIENT"
+      | "DISK_INSUFFICIENT"
+      | "PLATFORM_UNSUPPORTED";
+    /**
+     * @description The guided setup that applies, from the Computer's accelerators and platform. apple_silicon runs models on unified memory through Metal; it is a GPU path, never a CPU one.
+     * @enum {string}
+     */
+    LocalModelsSetupPath: "apple_silicon" | "nvidia" | "unknown";
+    LocalModelsReadiness: {
+      state: components["schemas"]["LocalModelsReadinessState"];
+      reason?: components["schemas"]["LocalModelsReadinessReason"];
+      setup_path?: components["schemas"]["LocalModelsSetupPath"];
+      /** @description The Computer's release ships the local-models enable command, so clients may show it; otherwise they link the manual setup steps. */
+      enable_command: boolean;
+    };
     LocalComputer: {
       /**
        * @description Last native host platform reported by this Computer. Omission preserves an existing observation; unknown legacy Computers omit this field.
@@ -4377,6 +4422,8 @@ export interface components {
       /** @description Runtimes and models as the Computer last reported them, kept while it is offline so an Agent can be placed there. */
       runtimes: components["schemas"]["LocalComputerRuntime"][];
       workspace_grants: components["schemas"]["LocalComputerWorkspaceGrant"][];
+      /** @description The same readiness the local-models summary carries, for the Computers page chip. */
+      local_models_readiness?: components["schemas"]["LocalModelsReadiness"];
     };
     LocalComputerPage: {
       items: components["schemas"]["LocalComputer"][];
@@ -4465,6 +4512,47 @@ export interface components {
       disk_free_bytes: number;
       gpus: components["schemas"]["LocalModelGpu"][];
     };
+    LocalModelsComputerOwner: {
+      actor_id: components["schemas"]["Id"];
+      display_name: string;
+    };
+    /**
+     * @description How the Computer was installed: desktop (the desktop app runs it), cli (the installer on a host), or container (a container runtime).
+     * @enum {string}
+     */
+    LocalComputerInstallKind: "desktop" | "cli" | "container";
+    LocalComputerAcceleratorGpu: {
+      /** @enum {string} */
+      vendor: "nvidia" | "amd" | "intel" | "apple" | "other";
+      /** @description Display only; never matched on. */
+      name: string;
+      /**
+       * Format: int64
+       * @description Dedicated GPU memory; absent when the probe can't read it.
+       */
+      memory_bytes?: number;
+    };
+    /** @description Hardware the Computer probed without the localmodels tool. probe failed means the lists say nothing about the hardware. */
+    LocalComputerAccelerators: {
+      /** @enum {string} */
+      probe: "ok" | "failed";
+      /** Format: int64 */
+      ram_total_bytes: number;
+      apple_silicon: boolean;
+      /**
+       * Format: int64
+       * @description Present only on Apple silicon; the memory the CPU and GPU share.
+       */
+      unified_memory_bytes?: number;
+      gpus: components["schemas"]["LocalComputerAcceleratorGpu"][];
+    };
+    /** @description The machine that serves this Computer's models when its local_models mode is remote. computer_id names a Linger Computer when the config does. */
+    LocalModelsManagedBy: {
+      /** @description Display only, from the Computer's config. */
+      label: string;
+      computer_id?: components["schemas"]["Id"];
+    };
+    /** @description accelerators is present only for the Computer owner. */
     LocalModelsComputer: {
       computer_id: components["schemas"]["Id"];
       display_name: string;
@@ -4473,6 +4561,14 @@ export interface components {
       last_seen_at?: components["schemas"]["Timestamp"];
       /** @description From the last snapshot that carried one. */
       host?: components["schemas"]["LocalModelHost"];
+      owner?: components["schemas"]["LocalModelsComputerOwner"];
+      /** @enum {string} */
+      platform?: "darwin" | "linux" | "win32";
+      daemon_version?: string;
+      install_kind?: components["schemas"]["LocalComputerInstallKind"];
+      readiness?: components["schemas"]["LocalModelsReadiness"];
+      accelerators?: components["schemas"]["LocalComputerAccelerators"];
+      managed_by?: components["schemas"]["LocalModelsManagedBy"];
     };
     LocalModelsViewUnavailableReason: {
       /**

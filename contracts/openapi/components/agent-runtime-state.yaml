@@ -1491,6 +1491,11 @@ components:
           minLength: 1
           maxLength: 64
           description: Computer release this deployment ships; omission keeps the last one.
+        release_current:
+          type: boolean
+          description: >-
+            The Computer runs this deployment's target release (its app sha256 matches). Omitted
+            when the deployment ships no target release.
     AgentRuntimeRunnerPlacement:
       type: object
       additionalProperties: false
@@ -1575,6 +1580,11 @@ components:
           type: string
           minLength: 1
           maxLength: 64
+        release_current:
+          type: boolean
+          description: >-
+            The Computer runs this deployment's target release (its app sha256 matches). Omitted
+            when the deployment ships no target release or the touch carries no release facts.
     RecordAgentLocalRunOperationRequest:
       type: object
       additionalProperties: false
