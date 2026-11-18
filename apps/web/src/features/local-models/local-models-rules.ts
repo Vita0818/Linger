@@ -315,16 +315,6 @@ export function collapsedRowBadges(model: LocalModel): CollapsedRowBadges {
   };
 }
 
-/** Concise badges for the collapsed row: structured parameter scale and capabilities. */
-export function rowBadges(model: LocalModel): string[] {
-  return collapsedRowBadges(model).badges;
-}
-
-/** Full list of hidden badges when `rowBadges` truncates with `+N`. */
-export function rowBadgesOverflowTitle(model: LocalModel): string | undefined {
-  return collapsedRowBadges(model).overflowTitle;
-}
-
 function formatRemainingTime(seconds: number) {
   if (seconds < 60) return `${seconds}s left`;
   if (seconds < 3600) return `${Math.ceil(seconds / 60)}m left`;

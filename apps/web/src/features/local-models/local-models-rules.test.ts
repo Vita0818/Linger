@@ -17,8 +17,6 @@ import {
   parametersLabel,
   placeName,
   poolLabel,
-  rowBadges,
-  rowBadgesOverflowTitle,
   safeModelSourceUrl,
   speedLabel,
   usedByBadge,
@@ -190,7 +188,6 @@ describe("local models rules", () => {
       badges: ["3B active", "Vision", "Tool use", "+2"],
       overflowTitle: "Reasoning, Coding",
     });
-    expect(rowBadges(moe)).toEqual(["3B active", "Vision", "Tool use", "+2"]);
 
     const dense = localModel({
       architecture: "dense",
@@ -201,38 +198,25 @@ describe("local models rules", () => {
     });
     expect(parametersLabel(dense)).toBe("4B (Dense)");
     expect(collapsedRowBadges(dense)).toEqual({ badges: ["4B", "Tool use"] });
-    expect(rowBadges(dense)).toEqual(["4B", "Tool use"]);
 
     // Collapsed badges depend strictly on structured fields, never name or description.
     expect(
-      rowBadges({
+      collapsedRowBadges({
         ...dense,
         description: "Vision reasoning model with 70B scale.",
         name: "Renamed Without Size",
       }),
-    ).toEqual(rowBadges(dense));
+    ).toEqual(collapsedRowBadges(dense));
 
     expect(
-      rowBadgesOverflowTitle(
-        localModel({
-          active_parameters: "3B",
-          capabilities: ["coding", "reasoning", "tool_use", "vision"],
-          id: "qwen3-coder-30b:Q4_K_M",
-          name: "Qwen3 Coder 30B",
-        }),
-      ),
-    ).toBe("Reasoning, Coding");
-    expect(rowBadgesOverflowTitle(dense)).toBeUndefined();
-
-    expect(
-      rowBadges(
+      collapsedRowBadges(
         localModel({
           id: "llama3.3:Q4_K_M",
           name: "Llama 3.3",
           parameters: "70B",
         }),
       ),
-    ).toEqual(["70B"]);
+    ).toEqual({ badges: ["70B"] });
   });
 
   it("identifies models on the computer and formats Agent usage chips", () => {
