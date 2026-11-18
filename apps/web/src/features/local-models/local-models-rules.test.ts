@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  collapsedRowBadges,
   downloadPercent,
   downloadStatusDetail,
   downloadStopped,
@@ -185,6 +186,10 @@ describe("local models rules", () => {
       vision: true,
     });
     expect(parametersLabel(moe)).toBe("30B · 3B active (MoE)");
+    expect(collapsedRowBadges(moe)).toEqual({
+      badges: ["3B active", "Vision", "Tool use", "+2"],
+      overflowTitle: "Reasoning, Coding",
+    });
     expect(rowBadges(moe)).toEqual(["3B active", "Vision", "Tool use", "+2"]);
 
     const dense = localModel({
@@ -195,6 +200,7 @@ describe("local models rules", () => {
       parameters: "4B",
     });
     expect(parametersLabel(dense)).toBe("4B (Dense)");
+    expect(collapsedRowBadges(dense)).toEqual({ badges: ["4B", "Tool use"] });
     expect(rowBadges(dense)).toEqual(["4B", "Tool use"]);
 
     // Collapsed badges depend strictly on structured fields, never name or description.

@@ -293,19 +293,36 @@ function allModelBadges(model: LocalModel): string[] {
   return badges;
 }
 
+const visibleBadgeCount = 3;
+
+export interface CollapsedRowBadges {
+  badges: string[];
+  overflowTitle?: string;
+}
+
+/** Concise badges and any `+N` overflow tooltip for the collapsed row, built once from structured fields. */
+export function collapsedRowBadges(model: LocalModel): CollapsedRowBadges {
+  const badges = allModelBadges(model);
+  if (badges.length <= visibleBadgeCount) {
+    return { badges };
+  }
+  return {
+    badges: [
+      ...badges.slice(0, visibleBadgeCount),
+      `+${badges.length - visibleBadgeCount}`,
+    ],
+    overflowTitle: badges.slice(visibleBadgeCount).join(", "),
+  };
+}
+
 /** Concise badges for the collapsed row: structured parameter scale and capabilities. */
 export function rowBadges(model: LocalModel): string[] {
-  const badges = allModelBadges(model);
-  if (badges.length > 3) {
-    return [...badges.slice(0, 3), `+${badges.length - 3}`];
-  }
-  return badges;
+  return collapsedRowBadges(model).badges;
 }
 
 /** Full list of hidden badges when `rowBadges` truncates with `+N`. */
 export function rowBadgesOverflowTitle(model: LocalModel): string | undefined {
-  const badges = allModelBadges(model);
-  return badges.length > 3 ? badges.slice(3).join(", ") : undefined;
+  return collapsedRowBadges(model).overflowTitle;
 }
 
 function formatRemainingTime(seconds: number) {

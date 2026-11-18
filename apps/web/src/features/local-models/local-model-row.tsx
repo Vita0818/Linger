@@ -27,13 +27,12 @@ import type {
 } from "./local-models-queries";
 import {
   agentNames,
+  collapsedRowBadges,
   downloadPercent,
   downloadStatusDetail,
   downloadStopped,
   formatGigabytes,
   placeName,
-  rowBadges,
-  rowBadgesOverflowTitle,
   usedByBadge,
   type ModelEntry,
   type ModelStatus,
@@ -338,15 +337,10 @@ export function ModelRow({
     status === "available" && !model.recommended && model.fit === "system";
   const brand = familyBrand(model.family);
   const usedBy = usedByBadge(entry);
-  const badges = rowBadges(model);
-  const overflowTitle = rowBadgesOverflowTitle(model);
+  const { badges, overflowTitle } = collapsedRowBadges(model);
   const hasMeta = Boolean(usedBy) || badges.length > 0;
   const detail = {
-    available: model.recommended
-      ? `${download} · Recommended`
-      : model.fit === "system"
-        ? `${download} · runs slower`
-        : download,
+    available: download,
     downloading: started ? null : downloadStatusDetail(model),
     failed: null,
     idle: model.note ? "no room to load yet" : null,
