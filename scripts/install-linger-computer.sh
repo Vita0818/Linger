@@ -1424,6 +1424,11 @@ stop_idle_daemon() {
   if ! stop_output="$("$cli_runner" stop --if-idle 2>&1)"; then
     [[ -z "$stop_output" ]] || printf '%s\n' "$stop_output" >&2
     printf '%s\n' 'Unable to stop the Computer daemon; the existing installation was preserved.' >&2
+    # A stop that timed out may still have stopped the daemon; rollback then
+    # starts it again, so the preserved installation keeps running.
+    if daemon_state_line="$(read_daemon_state "$cli_runner" 2>/dev/null)" && [[ "$daemon_state_line" == "stopped "* ]]; then
+      daemon_stopped=1
+    fi
     exit 1
   fi
   daemon_stopped=1

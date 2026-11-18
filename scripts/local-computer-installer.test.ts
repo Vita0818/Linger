@@ -3130,6 +3130,12 @@ else if (args[0] === "status") {
 } else if (args[0] === "stop") {
   if (log) appendFileSync(log, "simplex-stop:" + args.slice(1).join(" ") + ":" + config + "\\n");
   if (marker) rmSync(marker, { force: true });
+  // The 0.50 CLI waits 10 s for the process to exit and can report a failure
+  // for a Daemon that did stop.
+  if (process.env.LINGER_INSTALL_TEST_SIMPLEX_STOP_LATE === "1") {
+    process.stderr.write("Computer daemon did not stop: Computer daemon did not stop\\n");
+    process.exit(15);
+  }
 } else if (args[0] === "start") {
   if (log) appendFileSync(log, "simplex-start\\n");
   if (marker) writeFileSync(marker, "1");
@@ -3478,6 +3484,40 @@ describe.concurrent(
       expect(
         (await readdir(install.root)).filter((name) => name.startsWith("lib-")),
       ).toEqual([install.bundle]);
+    });
+
+    it("restarts the Simplex Daemon when its stop reports a failure but it stopped", async ({
+      expect,
+    }) => {
+      const fixture = await installerFixture("1.2.3");
+      const install = await writeSimplexInstall(fixture, {
+        origin: "http://localhost:3000",
+        environment: "local",
+      });
+      const environment = {
+        ...simplexEnvironment(fixture),
+        LINGER_INSTALL_TEST_SIMPLEX_STOP_LATE: "1",
+      };
+      await writeFile(environment.LINGER_INSTALL_TEST_SIMPLEX_RUNNING, "1");
+
+      await expect(
+        runInstaller({ ...fixture, environment }),
+      ).rejects.toMatchObject({
+        stderr: expect.stringMatching(
+          /Unable to stop the Computer daemon[\s\S]*The Simplex Computer was left as it was before this run\.\nReason code: LEGACY_BUSY\./u,
+        ),
+      });
+
+      expect(await readFile(fixture.invocations, "utf8")).toMatch(
+        /^simplex-stop:--if-idle:\S+\nsimplex-start\n$/u,
+      );
+      await expect(
+        readFile(environment.LINGER_INSTALL_TEST_SIMPLEX_RUNNING, "utf8"),
+      ).resolves.toBe("1");
+      expect(await pathExists(fixture.launcher)).toBe(false);
+      await expect(activeBundleName(install.root)).resolves.toBe(
+        install.bundle,
+      );
     });
 
     it("refuses while a Simplex Operation is active and changes nothing", async ({
