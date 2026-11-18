@@ -637,6 +637,10 @@ describe("LocalModelsPage", () => {
     renderPage(fixture);
     await findModels();
 
+    expect(
+      within(card("Qwen3 Coder 30B")).getByText("2 Agents"),
+    ).toHaveAttribute("title", "Used by Research agent, Code reviewer");
+
     fireEvent.click(
       screen.getByRole("button", { name: "Unload Qwen3 Coder 30B" }),
     );
@@ -669,6 +673,9 @@ describe("LocalModelsPage", () => {
         screen.getByRole("region", { name: "Qwen3 Coder 30B details" }),
       ).toHaveTextContent("No Agent yet"),
     );
+    expect(
+      within(card("Qwen3 Coder 30B")).queryByText(/^\d+ Agents?$/),
+    ).not.toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", { name: "Unload Qwen3 Coder 30B" }),
     );
@@ -1124,16 +1131,24 @@ describe("LocalModelsPage", () => {
     await findModels();
 
     const coderCard = card("Qwen3 Coder 30B");
-    expect(coderCard.querySelector('[data-family="qwen"]')).toBeInTheDocument();
+    expect(coderCard).toHaveAttribute("data-status", "loaded");
+    const qwenTile = coderCard.querySelector('[data-family="qwen"]');
+    expect(qwenTile).toBeInTheDocument();
+    expect(qwenTile).toHaveClass("bg-lavender-500/15", "text-lavender-700");
+    expect(within(coderCard).getByText("2 Agents")).toBeVisible();
     expect(within(coderCard).getByText("3B active")).toBeVisible();
     expect(within(coderCard).getByText("Tool use")).toBeVisible();
     expect(within(coderCard).getByText("Reasoning")).toBeVisible();
-    expect(within(coderCard).getByText("+1")).toBeVisible();
+    expect(within(coderCard).getByText("+1")).toHaveAttribute(
+      "title",
+      "Coding",
+    );
 
     const gemmaCard = card("Gemma 3 4B");
-    expect(
-      gemmaCard.querySelector('[data-family="gemma"]'),
-    ).toBeInTheDocument();
+    expect(gemmaCard).toHaveAttribute("data-status", "available");
+    const gemmaTile = gemmaCard.querySelector('[data-family="gemma"]');
+    expect(gemmaTile).toBeInTheDocument();
+    expect(gemmaTile).toHaveClass("bg-bluebell-500/15", "text-bluebell-700");
     expect(within(gemmaCard).getByText("Vision")).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "Qwen3 Coder 30B" }));
@@ -1154,6 +1169,48 @@ describe("LocalModelsPage", () => {
     );
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
+  it("distinguishes card states and keeps a single-node responsive header without competing utilities", async () => {
+    const view = withModel(
+      withModel(labView(), "gpt-oss-20b:Q4_K_M", {
+        capabilities: ["tool_use"],
+        parameters: "20B",
+      }),
+      "gemma3-27b:Q4_K_M",
+      {
+        error: { code: "ENGINE_START_FAILED" },
+        state: "failed",
+      },
+    );
+    renderPage(setup([view]));
+    await findModels();
+
+    const loadedCard = card("Qwen3 Coder 30B");
+    expect(loadedCard).toHaveAttribute("data-status", "loaded");
+    expect(loadedCard).not.toHaveAttribute("data-recommended");
+
+    const recommendedCard = card("GPT-OSS 20B");
+    expect(recommendedCard).toHaveAttribute("data-status", "available");
+    expect(recommendedCard).toHaveAttribute("data-recommended", "true");
+    expect(
+      within(recommendedCard).getByRole("button", {
+        name: "Download GPT-OSS 20B",
+      }),
+    ).toHaveClass("bg-primary");
+    const badgeGroup = within(recommendedCard)
+      .getByText("Tool use")
+      .closest("div")!;
+    expect(badgeGroup).toHaveClass("flex");
+    expect(badgeGroup).not.toHaveClass("hidden");
+    expect(recommendedCard.firstElementChild).toHaveClass("grid");
+    expect(recommendedCard.firstElementChild).not.toHaveClass("flex", "hidden");
+
+    const failedCard = card("Gemma 3 27B");
+    expect(failedCard).toHaveAttribute("data-status", "failed");
+
+    const unavailableCard = card("Llama 3.1 405B");
+    expect(unavailableCard).toHaveAttribute("data-status", "unavailable");
   });
 
   it("shows live download rate and ETA when bytes_per_second is reported", async () => {

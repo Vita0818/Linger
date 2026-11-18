@@ -5,6 +5,7 @@ import {
   downloadStatusDetail,
   downloadStopped,
   formatGigabytes,
+  isModelOnComputer,
   loadCheck,
   makeRoomSelection,
   makesRoom,
@@ -16,8 +17,10 @@ import {
   placeName,
   poolLabel,
   rowBadges,
+  rowBadgesOverflowTitle,
   safeModelSourceUrl,
   speedLabel,
+  usedByBadge,
 } from "./local-models-rules";
 import {
   gb,
@@ -192,8 +195,28 @@ describe("local models rules", () => {
       parameters: "4B",
     });
     expect(parametersLabel(dense)).toBe("4B (Dense)");
-    // Avoid repeating "4B" next to a model whose title already includes it.
-    expect(rowBadges(dense)).toEqual(["Tool use"]);
+    expect(rowBadges(dense)).toEqual(["4B", "Tool use"]);
+
+    // Collapsed badges depend strictly on structured fields, never name or description.
+    expect(
+      rowBadges({
+        ...dense,
+        description: "Vision reasoning model with 70B scale.",
+        name: "Renamed Without Size",
+      }),
+    ).toEqual(rowBadges(dense));
+
+    expect(
+      rowBadgesOverflowTitle(
+        localModel({
+          active_parameters: "3B",
+          capabilities: ["coding", "reasoning", "tool_use", "vision"],
+          id: "qwen3-coder-30b:Q4_K_M",
+          name: "Qwen3 Coder 30B",
+        }),
+      ),
+    ).toBe("Reasoning, Coding");
+    expect(rowBadgesOverflowTitle(dense)).toBeUndefined();
 
     expect(
       rowBadges(
@@ -204,6 +227,76 @@ describe("local models rules", () => {
         }),
       ),
     ).toEqual(["70B"]);
+  });
+
+  it("identifies models on the computer and formats Agent usage chips", () => {
+    expect(
+      isModelOnComputer(localModel({ id: "m", name: "M" }), "available"),
+    ).toBe(false);
+    expect(
+      isModelOnComputer(localModel({ id: "m", name: "M" }), "unavailable"),
+    ).toBe(false);
+    expect(
+      isModelOnComputer(
+        localModel({
+          error: { code: "DOWNLOAD_FAILED" },
+          id: "m",
+          name: "M",
+          state: "failed",
+        }),
+        "failed",
+      ),
+    ).toBe(false);
+    expect(
+      isModelOnComputer(
+        localModel({ id: "m", name: "M", state: "loaded" }),
+        "loaded",
+      ),
+    ).toBe(true);
+
+    expect(
+      usedByBadge({
+        model: localModel({ id: "m", name: "M", state: "loaded" }),
+        status: "loaded",
+        used_by: [{ agent_id: "a1", name: "Research" }],
+      }),
+    ).toBe("1 Agent");
+    expect(
+      usedByBadge({
+        model: localModel({ id: "m", name: "M", state: "idle" }),
+        status: "idle",
+        used_by: [
+          { agent_id: "a1", name: "Research" },
+          { agent_id: "a2", name: "Writer" },
+        ],
+      }),
+    ).toBe("2 Agents");
+    expect(
+      usedByBadge({
+        model: localModel({ id: "m", name: "M", state: "loaded" }),
+        status: "loaded",
+        used_by: [],
+      }),
+    ).toBeUndefined();
+    expect(
+      usedByBadge({
+        model: localModel({ id: "m", name: "M", state: "absent" }),
+        status: "available",
+        used_by: [{ agent_id: "a1", name: "Research" }],
+      }),
+    ).toBeUndefined();
+    expect(
+      usedByBadge({
+        model: localModel({
+          error: { code: "NETWORK_UNAVAILABLE" },
+          id: "m",
+          name: "M",
+          state: "failed",
+        }),
+        status: "failed",
+        used_by: [{ agent_id: "a1", name: "Research" }],
+      }),
+    ).toBeUndefined();
   });
 
   it("formats live download speed, ETA, prompt speed, and safe source URLs", () => {

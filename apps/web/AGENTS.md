@@ -26,10 +26,13 @@ build:assets` to check the initial JS budget.
 - `src/features/local-models`: Settings › Local models (`settings/local-models?computer=<id>`),
   one Computer's model library as TeamHub last stored it. The Computer decides
   fit, availability, placement, the recommendation and memory; the page only
-  orders and labels them, picks the Make room default, renders family icons,
-  capability/parameter badges, download speed/ETA and model-card facts from
-  structured `LocalModel` fields in `local-models-rules.ts`, and maps every
-  code and enum label to English in `local-models-copy.ts`. Without `?computer=`
+  orders and labels them, picks the Make room default, renders tinted family
+  icon tiles, Agent usage counts, structured capability/parameter badges (never
+  matched against `name` or `description`), state-distinct cards (`loaded`,
+  `recommended`, `failed`, `unavailable`), download speed/ETA, and top
+  diagnostic callouts with a two-column model-card facts grid from structured
+  `LocalModel` fields in `local-models-rules.ts`, and maps every code and enum
+  label to English in `local-models-copy.ts`. Without `?computer=`
   the desktop app opens
   its own Computer. Only the Computer's owner can act; actions return at once
   and progress arrives as `local-models` invalidation hints. From the click

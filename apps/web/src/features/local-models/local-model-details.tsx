@@ -22,6 +22,7 @@ import {
   contextLabel,
   downloadStopped,
   formatGigabytes,
+  isModelOnComputer,
   modelCapabilities,
   modelSourceLabel,
   parametersLabel,
@@ -39,11 +40,29 @@ const segmentColors = ["bg-rain-500", "bg-lichen-500", "bg-sun-500"] as const;
 /** Foundation components hold memory too, but are not models of the list. */
 const componentColor = "bg-muted-foreground/40";
 
-function Fact({ label, children }: { label: string; children: ReactNode }) {
+function Fact({
+  bordered = true,
+  children,
+  className,
+  label,
+}: {
+  bordered?: boolean;
+  children: ReactNode;
+  className?: string;
+  label: string;
+}) {
   return (
-    <div className="flex min-h-10 items-center gap-3 py-1.5 text-sm">
+    <div
+      className={cn(
+        "flex min-h-9 items-center gap-3 py-1.5 text-sm",
+        bordered && "border-t border-border/70",
+        className,
+      )}
+    >
       <span className="w-28 shrink-0 text-muted-foreground">{label}</span>
-      <span className="min-w-0 flex-1 text-foreground">{children}</span>
+      <span className="min-w-0 flex-1 tabular-nums text-foreground">
+        {children}
+      </span>
     </div>
   );
 }
@@ -81,8 +100,7 @@ export function ModelFacts({
   // A stopped download holds only a partial file, so it reads like a model
   // not yet on the Computer.
   const stopped = downloadStopped(model);
-  const onComputer =
-    status !== "available" && status !== "unavailable" && !stopped;
+  const onComputer = isModelOnComputer(model, status);
   const pool = poolOf(view, model.pool);
   const plannedPlace =
     status === "available" || stopped ? placeName(view, model.pool) : undefined;
@@ -91,84 +109,105 @@ export function ModelFacts({
   const speed = speedLabel(model);
   const sourceUrl = safeModelSourceUrl(model.source_url);
   return (
-    <div className="divide-y divide-border">
-      {model.publisher ? (
-        <Fact label="Publisher">{model.publisher}</Fact>
-      ) : null}
-      {parameters ? <Fact label="Parameters">{parameters}</Fact> : null}
-      {capabilities.length ? (
-        <Fact label="Capabilities">
-          <span className="flex flex-wrap gap-1.5">
-            {capabilities.map((capability) => (
-              <span
-                className="rounded-full bg-muted px-2 py-0.5 text-xs text-secondary-foreground"
-                key={capability}
-              >
-                {capabilityCopy(capability)}
+    <div>
+      {model.error || status === "unavailable" ? (
+        <div className="my-1.5 rounded-lg border border-[var(--app-status-danger-border)] bg-[var(--app-status-danger-surface)] px-3 py-0.5">
+          {model.error ? (
+            <Fact
+              bordered={false}
+              label={stopped ? "Last download" : "Last load"}
+            >
+              <span className="text-app-danger">
+                {modelErrorCopy(model.error.code)}
               </span>
-            ))}
-          </span>
-        </Fact>
-      ) : null}
-      <Fact label="Version">{model.quant}</Fact>
-      <Fact label="Memory">
-        {formatGigabytes(model.memory_bytes)}
-        {onComputer && pool
-          ? ` on ${poolLabel(view, pool)}`
-          : plannedPlace
-            ? ` on ${plannedPlace}`
-            : ""}
-      </Fact>
-      <Fact label={onComputer ? "On disk" : "Download"}>
-        {formatGigabytes(model.download_bytes)}
-      </Fact>
-      <Fact label="Context">{contextLabel(model.context_tokens)}</Fact>
-      {speed ? <Fact label="Speed">{speed}</Fact> : null}
-      {model.license ? <Fact label="License">{model.license}</Fact> : null}
-      {sourceUrl ? (
-        <Fact label="Source">
-          <a
-            className="inline-flex max-w-full items-center gap-1 text-foreground underline underline-offset-2"
-            href={sourceUrl}
-            rel="noopener noreferrer"
-            target="_blank"
-          >
-            <span className="truncate">{modelSourceLabel(sourceUrl)}</span>
-            <Icon className="shrink-0" icon={LinkSquare02Icon} size={14} />
-          </a>
-        </Fact>
-      ) : null}
-      {onComputer ? (
-        <Fact label="Used by">
-          {entry.used_by.length ? agentNames(entry) : "No Agent yet"}
-        </Fact>
-      ) : null}
-      {model.endpoint ? (
-        <Fact label="Endpoint">
-          <CopyEndpoint endpoint={model.endpoint.base_url} name={model.name} />
-        </Fact>
-      ) : null}
-      {model.error ? (
-        <Fact label={stopped ? "Last download" : "Last load"}>
-          <span className="text-app-danger">
-            {modelErrorCopy(model.error.code)}
-          </span>
-        </Fact>
+            </Fact>
+          ) : null}
+          {status === "unavailable" ? (
+            <Fact bordered={Boolean(model.error)} label="Why not">
+              <span className="text-app-danger">
+                {unavailableCopy(model.availability.reason)}
+              </span>
+            </Fact>
+          ) : null}
+        </div>
       ) : null}
       {model.note ? (
-        <Fact label="Note">
-          <span className="text-app-warning">
-            {modelNoteCopy(model.note.code, placeName(view, model.pool))}
-          </span>
-        </Fact>
+        <div className="my-1.5 rounded-lg border border-[var(--app-status-warning-border)] bg-[var(--app-status-warning-surface)] px-3 py-0.5">
+          <Fact bordered={false} label="Note">
+            <span className="text-app-warning">
+              {modelNoteCopy(model.note.code, placeName(view, model.pool))}
+            </span>
+          </Fact>
+        </div>
       ) : null}
-      {status === "unavailable" ? (
-        <Fact label="Why not">
-          <span className="text-app-danger">
-            {unavailableCopy(model.availability.reason)}
-          </span>
+      <div className="mt-1 grid grid-cols-1 gap-x-6 @xl:grid-cols-2">
+        {capabilities.length ? (
+          <Fact className="@xl:col-span-2" label="Capabilities">
+            <span className="flex flex-wrap gap-1.5">
+              {capabilities.map((capability) => (
+                <span
+                  className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-secondary-foreground"
+                  key={capability}
+                >
+                  {capabilityCopy(capability)}
+                </span>
+              ))}
+            </span>
+          </Fact>
+        ) : null}
+        {model.publisher ? (
+          <Fact label="Publisher">{model.publisher}</Fact>
+        ) : null}
+        {parameters ? <Fact label="Parameters">{parameters}</Fact> : null}
+        <Fact label="Memory">
+          {formatGigabytes(model.memory_bytes)}
+          {onComputer && pool
+            ? ` on ${poolLabel(view, pool)}`
+            : plannedPlace
+              ? ` on ${plannedPlace}`
+              : ""}
         </Fact>
-      ) : null}
+        <Fact label={onComputer ? "On disk" : "Download"}>
+          {formatGigabytes(model.download_bytes)}
+        </Fact>
+        <Fact label="Context">{contextLabel(model.context_tokens)}</Fact>
+        <Fact label="Version">
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-secondary-foreground">
+            {model.quant}
+          </code>
+        </Fact>
+        {speed ? <Fact label="Speed">{speed}</Fact> : null}
+        {model.license ? <Fact label="License">{model.license}</Fact> : null}
+        {onComputer ? (
+          <Fact
+            className={entry.used_by.length > 1 ? "@xl:col-span-2" : undefined}
+            label="Used by"
+          >
+            {entry.used_by.length ? agentNames(entry) : "No Agent yet"}
+          </Fact>
+        ) : null}
+        {sourceUrl ? (
+          <Fact className="@xl:col-span-2" label="Source">
+            <a
+              className="inline-flex max-w-full items-center gap-1 text-foreground underline underline-offset-2"
+              href={sourceUrl}
+              rel="noopener noreferrer"
+              target="_blank"
+            >
+              <span className="truncate">{modelSourceLabel(sourceUrl)}</span>
+              <Icon className="shrink-0" icon={LinkSquare02Icon} size={14} />
+            </a>
+          </Fact>
+        ) : null}
+        {model.endpoint ? (
+          <Fact className="@xl:col-span-2" label="Endpoint">
+            <CopyEndpoint
+              endpoint={model.endpoint.base_url}
+              name={model.name}
+            />
+          </Fact>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -286,8 +325,8 @@ export function AdvancedDialog({
             <h3 className="mt-5 mb-1 text-sm font-medium text-muted-foreground">
               Hardware
             </h3>
-            <div className="divide-y divide-border">
-              <Fact label="Memory">
+            <div>
+              <Fact bordered={false} label="Memory">
                 {formatGigabytes(host.ram_total_bytes)}
               </Fact>
               {host.gpus.map((gpu) => (

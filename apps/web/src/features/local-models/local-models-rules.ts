@@ -55,6 +55,21 @@ export function downloadStopped(model: LocalModel): boolean {
   );
 }
 
+/**
+ * Whether the Computer currently holds a model record (loaded, loading, idle,
+ * or a failed load, excluding absent rows and stopped partial downloads).
+ */
+export function isModelOnComputer(
+  model: LocalModel,
+  status: ModelStatus,
+): boolean {
+  return (
+    status !== "available" &&
+    status !== "unavailable" &&
+    !downloadStopped(model)
+  );
+}
+
 const fitOrder: Record<LocalModel["fit"], number> = {
   gpu: 0,
   none: 2,
@@ -219,6 +234,18 @@ export function agentNames(entry: Pick<LocalModelView, "used_by">) {
   return entry.used_by.map((user) => user.name).join(", ");
 }
 
+/** Compact Agent count chip for a model on the Computer, or undefined when unused. */
+export function usedByBadge(
+  entry: Pick<ModelEntry, "model" | "status" | "used_by">,
+): string | undefined {
+  if (!isModelOnComputer(entry.model, entry.status) || !entry.used_by.length) {
+    return undefined;
+  }
+  return entry.used_by.length === 1
+    ? "1 Agent"
+    : `${entry.used_by.length} Agents`;
+}
+
 export type LocalModelCapability = NonNullable<
   LocalModel["capabilities"]
 >[number];
@@ -253,24 +280,32 @@ export function parametersLabel(model: LocalModel) {
   return scale || arch;
 }
 
-/** Concise badges for the collapsed row: parameter scale (when distinct) and capabilities. */
-export function rowBadges(model: LocalModel): string[] {
+function allModelBadges(model: LocalModel): string[] {
   const badges: string[] = [];
   if (model.active_parameters) {
     badges.push(`${model.active_parameters} active`);
-  } else if (
-    model.parameters &&
-    !model.name.toLowerCase().includes(model.parameters.toLowerCase())
-  ) {
+  } else if (model.parameters) {
     badges.push(model.parameters);
   }
   for (const capability of modelCapabilities(model)) {
     badges.push(capabilityCopy(capability));
   }
+  return badges;
+}
+
+/** Concise badges for the collapsed row: structured parameter scale and capabilities. */
+export function rowBadges(model: LocalModel): string[] {
+  const badges = allModelBadges(model);
   if (badges.length > 3) {
     return [...badges.slice(0, 3), `+${badges.length - 3}`];
   }
   return badges;
+}
+
+/** Full list of hidden badges when `rowBadges` truncates with `+N`. */
+export function rowBadgesOverflowTitle(model: LocalModel): string | undefined {
+  const badges = allModelBadges(model);
+  return badges.length > 3 ? badges.slice(3).join(", ") : undefined;
 }
 
 function formatRemainingTime(seconds: number) {
