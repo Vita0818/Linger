@@ -129,6 +129,13 @@ simplex_dispatcher_marker='# simplexai-computer-dispatcher-v1'
 simplex_v1_launcher_marker='# simplexai-computer-launcher-v1'
 simplex_launcher=""
 migrate_from="${LINGER_COMPUTER_MIGRATE_FROM:-}"
+# Every refusal or rollback names one of these codes; the reinstall-legacy page
+# explains each one and keeps the manual steps.
+simplex_failure_code="LEGACY_INSTALL_FAILED"
+
+simplex_failure_help() {
+  printf 'Reason code: %s. Manual steps: %s/install/reinstall-legacy\n' "$1" "$web_origin" >&2
+}
 
 # simplex_launcher_data_root prints the install root a Simplex launcher runs.
 simplex_launcher_data_root() {
@@ -224,6 +231,11 @@ select_simplex_install() {
     simplex_launcher="$confirmed"
     return 0
   fi
+  if (( confirmed_count > 1 )); then
+    printf '%s accepted more than one Computer from before Simplex became Linger on this computer. Nothing was changed; run the installer again with LINGER_COMPUTER_MIGRATE_FROM naming the one to move.\n' "$web_origin" >&2
+    simplex_failure_help LEGACY_AMBIGUOUS
+    exit 1
+  fi
   for candidate in "${candidates[@]}"; do
     origin="$(sed -n 's/^# web-origin //p' "$candidate")"
     listing+="$(printf '  %-34s %s' "$(basename "$candidate")" "${origin:-unknown origin}")"$'\n'
@@ -232,6 +244,7 @@ select_simplex_install() {
   printf '  LINGER_COMPUTER_MIGRATE_FROM=%s   move that Computer to Linger, keeping its ID, Agents and data\n' "$(basename "${candidates[0]}")" >&2
   printf '  LINGER_COMPUTER_MIGRATE_FROM=none   leave it alone and install a separate new Computer\n' >&2
   printf 'For example: curl -fsSL %s/install/linger-computer.sh | LINGER_COMPUTER_MIGRATE_FROM=none bash\n' "$web_origin" >&2
+  simplex_failure_help LEGACY_UNCONFIRMED
   exit 1
 }
 
@@ -240,6 +253,7 @@ select_simplex_install() {
 refuse_simplex_install() {
   printf 'Cannot move %s to Linger automatically: %s. Nothing was changed.\n' "$(basename "$simplex_launcher")" "$1" >&2
   printf 'To move it by hand: stop it with %s daemon stop, install Linger with LINGER_COMPUTER_MIGRATE_FROM=none, then run %s login --config <its config.json> to reconnect the same Computer.\n' "$(basename "$simplex_launcher")" "$command_name" >&2
+  simplex_failure_help LEGACY_UNSUPPORTED
   exit 1
 }
 
@@ -964,6 +978,12 @@ cleanup() {
   if (( success == 0 )); then
     if ! restore_old_installation; then
       exit_code=1
+      [[ -z "$simplex_launcher" ]] || printf 'The Simplex Computer could not be fully restored; see the messages above.\n' >&2
+    elif [[ -n "$simplex_launcher" ]] && (( exit_code != 0 )); then
+      printf 'The Simplex Computer was left as it was before this run.\n' >&2
+    fi
+    if [[ -n "$simplex_launcher" ]] && (( exit_code != 0 )); then
+      simplex_failure_help "$simplex_failure_code"
     fi
   fi
   rm -rf "$temporary_directory"
@@ -1443,7 +1463,9 @@ if [[ -n "$simplex_launcher" ]]; then
   installation_action="migrated"
   old_release_label="$(run_old_cli version 2>/dev/null | sed 's/^simplex-computer //' || true)"
   progress_note "$(printf 'Moving %s (Simplex %s) to Linger %s in place; its Computer ID, credential, Agents and data stay in %s.' "$(basename "$simplex_launcher")" "$old_release_label" "$new_release_label" "$data_root")"
+  simplex_failure_code="LEGACY_BUSY"
   stop_idle_daemon run_old_daemon
+  simplex_failure_code="LEGACY_INSTALL_FAILED"
 elif [[ -e "$launcher" ]] || [[ -n "$old_active_bundle_name" ]]; then
   installation_action="upgraded"
   # An unverified lifecycle CLI is never run; the state checks below then fail closed.
@@ -1507,6 +1529,7 @@ fi
 write_private_value "$web_origin_file" "$web_origin"
 
 if (( was_running == 1 )); then
+  simplex_failure_code="LEGACY_CONNECT_FAILED"
   new_daemon_start_attempted=1
   if ! "$launcher" daemon start >/dev/null; then
     printf '%s\n' 'The upgraded daemon failed to restart.' >&2

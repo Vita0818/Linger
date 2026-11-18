@@ -55,6 +55,10 @@ installer converts it once, in place, when it finds one:
   30 seconds. Then the installer deletes the Simplex bundles, upgrade markers, launcher, and (once no Simplex
   environment is left) the `simplex-computer` dispatcher. Any failure before
   that restores the Simplex installation and restarts its Daemon.
+- Every refusal and rollback prints a reason code (`LEGACY_UNCONFIRMED`,
+  `LEGACY_AMBIGUOUS`, `LEGACY_UNSUPPORTED`, `LEGACY_BUSY`,
+  `LEGACY_CONNECT_FAILED`, `LEGACY_INSTALL_FAILED`) and the
+  `/install/reinstall-legacy` page with the manual steps.
 
 The Simplex CLI installed no system service, so there is none to replace.
 Windows Simplex installs are not converted yet.

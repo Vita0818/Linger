@@ -3451,7 +3451,9 @@ describe.concurrent(
       await expect(
         runInstaller({ ...fixture, environment }),
       ).rejects.toMatchObject({
-        stderr: expect.stringContaining("rolling back"),
+        stderr: expect.stringMatching(
+          /rolling back[\s\S]*The Simplex Computer was left as it was before this run\.\nReason code: LEGACY_CONNECT_FAILED\. Manual steps: http:\/\/localhost:3000\/install\/reinstall-legacy\n/u,
+        ),
       });
 
       const invocations = await readFile(fixture.invocations, "utf8");
@@ -3495,8 +3497,8 @@ describe.concurrent(
       await expect(
         runInstaller({ ...fixture, environment }),
       ).rejects.toMatchObject({
-        stderr: expect.stringContaining(
-          "Cannot upgrade while 1 Agent Operation is active",
+        stderr: expect.stringMatching(
+          /Cannot upgrade while 1 Agent Operation is active[\s\S]*Reason code: LEGACY_BUSY\./u,
         ),
       });
 
@@ -3532,6 +3534,7 @@ describe.concurrent(
         "LINGER_COMPUTER_MIGRATE_FROM=simplex-computer-ci-local-xspace",
       );
       expect(failure?.stderr).toContain("LINGER_COMPUTER_MIGRATE_FROM=none");
+      expect(failure?.stderr).toContain("Reason code: LEGACY_UNCONFIRMED.");
       expect(await pathExists(fixture.installRoot)).toBe(false);
       expect(await pathExists(fixture.launcher)).toBe(false);
       await expect(activeBundleName(install.root)).resolves.toBe(
@@ -3674,6 +3677,17 @@ describe.concurrent(
           "Cannot move simplex-computer-local to Linger automatically: SIMPLEX_COMPUTER_DATA_DIR or SIMPLEX_COMPUTER_CONFIG is set",
         ),
       });
+      await expect(
+        runInstaller({
+          ...fixture,
+          environment: {
+            ...fixture.environment,
+            SIMPLEX_COMPUTER_CONFIG: "/etc/simplex/config.json",
+          },
+        }),
+      ).rejects.toMatchObject({
+        stderr: expect.stringContaining("Reason code: LEGACY_UNSUPPORTED."),
+      });
       expect(await pathExists(fixture.installRoot)).toBe(false);
       expect(await pathExists(install.launcher)).toBe(true);
     });
@@ -3777,6 +3791,65 @@ describe.concurrent(
         expect(await pathExists(install.launcher)).toBe(true);
       } finally {
         await refusing.close();
+      }
+    });
+
+    it("finds nothing to convert when run again after a conversion", async ({
+      expect,
+    }) => {
+      const fixture = await installerFixture("1.2.3");
+      const install = await writeSimplexInstall(fixture, {
+        origin: "http://localhost:3000",
+        environment: "local",
+      });
+      const environment = simplexEnvironment(fixture);
+      await runInstaller({ ...fixture, environment });
+      const bundle = await activeBundleName(install.root);
+
+      const result = await runInstaller({ ...fixture, environment });
+
+      expect(result.stdout).toContain("Linger Computer is already up to date.");
+      await expect(activeBundleName(install.root)).resolves.toBe(bundle);
+      expect(await pathExists(fixture.installRoot)).toBe(false);
+    });
+
+    it("refuses when this HTTPS origin accepts more than one Simplex Computer", async ({
+      expect,
+    }) => {
+      const fixture = await installerFixture("1.2.3");
+      const tls = await selfSignedCertificate(fixture.root);
+      const accepting = await runnerGatewayServer(tls, simplexToken);
+      try {
+        const first = await writeSimplexInstall(fixture, {
+          origin: "https://ci-local-xspace.example.test",
+          environment: "ci-local-xspace",
+        });
+        const second = await writeSimplexInstall(fixture, {
+          origin: "https://ci-github.example.test",
+          environment: "ci-github",
+        });
+
+        await expect(
+          runInstaller({
+            ...fixture,
+            environment: {
+              ...simplexEnvironment(fixture),
+              LINGER_WEB_URL: accepting.origin,
+              NODE_EXTRA_CA_CERTS: tls.certFile,
+            },
+          }),
+        ).rejects.toMatchObject({
+          code: 1,
+          stderr: expect.stringContaining("Reason code: LEGACY_AMBIGUOUS."),
+        });
+        expect(accepting.requests).toHaveLength(2);
+        expect(await pathExists(first.launcher)).toBe(true);
+        expect(await pathExists(second.launcher)).toBe(true);
+        expect(
+          await pathExists(serverEnvironment(fixture, accepting).launcher),
+        ).toBe(false);
+      } finally {
+        await accepting.close();
       }
     });
   },
