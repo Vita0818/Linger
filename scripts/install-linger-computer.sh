@@ -116,9 +116,175 @@ launcher_data_root() {
   sed -n 's/^data_root="\${LINGER_COMPUTER_DATA_DIR:-\(.*\)}"$/\1/p' "$1" | sed -e 's/\\\(.\)/\1/g' | grep .
 }
 
+# A Computer installed before Simplex became Linger (0.43 to 0.50) has this
+# installer's layout under Simplex names: the launcher simplex-computer-<env>,
+# the dispatcher simplex-computer, and an install root whose bundles run
+# simplex-computer and simplex-computer-daemon. Its config.json, credential and
+# state are what the Linger Daemon reads. Converting it adopts that install root
+# in place: the Linger bundle and launcher replace the Simplex ones, and
+# config.json and state stay byte-identical, because Codex and Claude Code
+# session stores and Context views record absolute paths under it.
+simplex_launcher_marker='# simplexai-computer-launcher-v2'
+simplex_dispatcher_marker='# simplexai-computer-dispatcher-v1'
+simplex_v1_launcher_marker='# simplexai-computer-launcher-v1'
+simplex_launcher=""
+migrate_from="${LINGER_COMPUTER_MIGRATE_FROM:-}"
+
+# simplex_launcher_data_root prints the install root a Simplex launcher runs.
+simplex_launcher_data_root() {
+  sed -n 's/^data_root="\${SIMPLEX_COMPUTER_DATA_DIR:-\(.*\)}"$/\1/p' "$1" | sed -e 's/\\\(.\)/\1/g' | grep .
+}
+
+# simplex_launchers prints every Simplex environment launcher in the bin
+# directory, one path per line.
+simplex_launchers() {
+  local candidate
+  for candidate in "$bin_directory"/simplex-computer-*; do
+    [[ -f "$candidate" ]] && [[ ! -L "$candidate" ]] && grep -Fqx "$simplex_launcher_marker" "$candidate" || continue
+    printf '%s\n' "$candidate"
+  done
+}
+
+# simplex_server_confirms succeeds when this installer's own HTTPS origin
+# accepts the Simplex Computer's credential at its Runner Gateway. It opens the
+# WebSocket upgrade with the credential and closes it at once, before any
+# runner.hello, so the server records nothing. The Simplex bundle's own Node
+# reads the credential, which never enters an argument or the environment.
+simplex_server_confirms() {
+  local root="$1" bundle_name node
+  [[ "$web_origin" == https://* ]] || return 1
+  [[ -f "$root/config.json" ]] && [[ ! -L "$root/config.json" ]] || return 1
+  [[ -f "$root/active-bundle" ]] && [[ ! -L "$root/active-bundle" ]] || return 1
+  read -r bundle_name < "$root/active-bundle" || return 1
+  [[ "$bundle_name" =~ ^lib-[0-9A-Za-z._-]+$ ]] || return 1
+  node="$root/$bundle_name/runtime/bin/node"
+  [[ -f "$node" ]] && [[ -x "$node" ]] || return 1
+  "$node" -e '
+    const { readFileSync } = require("node:fs");
+    const { randomBytes } = require("node:crypto");
+    const https = require("node:https");
+    let token;
+    try {
+      const file = JSON.parse(readFileSync(process.argv[1], "utf8"))?.gateway?.token_file;
+      if (typeof file !== "string" || !file.startsWith("/")) process.exit(1);
+      token = readFileSync(file, "utf8").trim();
+    } catch { process.exit(1); }
+    if (!/^[\x21-\x7e]{1,4096}$/.test(token)) process.exit(1);
+    const request = https.request(new URL("/v1/runner-gateway", process.argv[2]), {
+      headers: {
+        Authorization: `Bearer ${token}`, Connection: "Upgrade", Upgrade: "websocket",
+        "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": randomBytes(16).toString("base64"),
+      },
+      timeout: 15000,
+    });
+    request.on("upgrade", (response, socket) => { socket.destroy(); process.exit(response.statusCode === 101 ? 0 : 1); });
+    request.on("response", (response) => { response.resume(); process.exit(1); });
+    request.on("timeout", () => request.destroy());
+    request.on("error", () => process.exit(1));
+    request.end();
+  ' "$root/config.json" "$web_origin" >/dev/null 2>&1
+}
+
+# select_simplex_install sets simplex_launcher to the Simplex Computer this run
+# converts: the one LINGER_COMPUTER_MIGRATE_FROM names, else the one installed
+# from this Web origin, else the one this origin's server confirms as its own.
+# Any other Simplex Computer stops the installer before it changes anything,
+# because only the person can say whether it belongs to this deployment.
+select_simplex_install() {
+  local candidate origin listing="" confirmed="" confirmed_count=0
+  local -a candidates=()
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] && candidates+=("$candidate")
+  done < <(simplex_launchers)
+  if [[ -n "$migrate_from" ]]; then
+    [[ "$migrate_from" != none ]] || return 0
+    for candidate in "${candidates[@]}"; do
+      if [[ "$(basename "$candidate")" == "$migrate_from" ]]; then
+        simplex_launcher="$candidate"
+        return 0
+      fi
+    done
+    printf 'LINGER_COMPUTER_MIGRATE_FROM names %s, which is not a Simplex Computer command in %s. Nothing was changed.\n' "$migrate_from" "$bin_directory" >&2
+    exit 2
+  fi
+  (( ${#candidates[@]} > 0 )) || return 0
+  for candidate in "${candidates[@]}"; do
+    if [[ "$(sed -n 's/^# web-origin //p' "$candidate")" == "$web_origin" ]]; then
+      simplex_launcher="$candidate"
+      return 0
+    fi
+  done
+  for candidate in "${candidates[@]}"; do
+    if simplex_server_confirms "$(simplex_launcher_data_root "$candidate")"; then
+      confirmed="$candidate"
+      confirmed_count=$((confirmed_count + 1))
+    fi
+  done
+  if (( confirmed_count == 1 )); then
+    simplex_launcher="$confirmed"
+    return 0
+  fi
+  for candidate in "${candidates[@]}"; do
+    origin="$(sed -n 's/^# web-origin //p' "$candidate")"
+    listing+="$(printf '  %-34s %s' "$(basename "$candidate")" "${origin:-unknown origin}")"$'\n'
+  done
+  printf 'This computer has a Computer from before Simplex became Linger, and %s did not confirm it as one of its Computers:\n%sNothing was changed. Run the installer again with one of these set:\n' "$web_origin" "$listing" >&2
+  printf '  LINGER_COMPUTER_MIGRATE_FROM=%s   move that Computer to Linger, keeping its ID, Agents and data\n' "$(basename "${candidates[0]}")" >&2
+  printf '  LINGER_COMPUTER_MIGRATE_FROM=none   leave it alone and install a separate new Computer\n' >&2
+  printf 'For example: curl -fsSL %s/install/linger-computer.sh | LINGER_COMPUTER_MIGRATE_FROM=none bash\n' "$web_origin" >&2
+  exit 1
+}
+
+# refuse_simplex_install stops before anything changed and prints the manual
+# steps for a Simplex Computer this installer cannot convert safely.
+refuse_simplex_install() {
+  printf 'Cannot move %s to Linger automatically: %s. Nothing was changed.\n' "$(basename "$simplex_launcher")" "$1" >&2
+  printf 'To move it by hand: stop it with %s daemon stop, install Linger with LINGER_COMPUTER_MIGRATE_FROM=none, then run %s login --config <its config.json> to reconnect the same Computer.\n' "$(basename "$simplex_launcher")" "$command_name" >&2
+  exit 1
+}
+
+# assert_simplex_install checks every precondition of the conversion while
+# nothing has changed yet.
+assert_simplex_install() {
+  local root bundle_name owner_uid
+  [[ -z "${SIMPLEX_COMPUTER_DATA_DIR+x}" ]] && [[ -z "${SIMPLEX_COMPUTER_CONFIG+x}" ]] ||
+    refuse_simplex_install 'SIMPLEX_COMPUTER_DATA_DIR or SIMPLEX_COMPUTER_CONFIG is set, so it does not run from its own install root'
+  root="$(simplex_launcher_data_root "$simplex_launcher")" || refuse_simplex_install 'its launcher names no install root'
+  if [[ "$root" != /* ]] || [[ "$root" == / ]] || [[ "$root" == "$home_directory" ]] || [[ -L "$root" ]] || [[ ! -d "$root" ]]; then
+    refuse_simplex_install 'its install root is not a safe directory'
+  fi
+  if stat -f '%u' "$root" >/dev/null 2>&1; then
+    owner_uid="$(stat -f '%u' "$root")"
+  else
+    owner_uid="$(stat -c '%u' "$root")"
+  fi
+  [[ "$owner_uid" == "$(id -u)" ]] || refuse_simplex_install 'its install root belongs to another user'
+  [[ -f "$root/active-bundle" ]] && [[ ! -L "$root/active-bundle" ]] && read -r bundle_name < "$root/active-bundle" &&
+    [[ "$bundle_name" =~ ^lib-[0-9A-Za-z._-]+$ ]] && [[ -d "$root/$bundle_name" ]] && [[ ! -L "$root/$bundle_name" ]] &&
+    [[ -f "$root/$bundle_name/cli/simplex-computer" ]] && [[ ! -L "$root/$bundle_name/cli/simplex-computer" ]] &&
+    [[ -x "$root/$bundle_name/cli/simplex-computer" ]] || refuse_simplex_install 'its installed bundle is incomplete'
+  if [[ -L "$root/config.json" ]] || { [[ -e "$root/config.json" ]] && [[ ! -f "$root/config.json" ]]; }; then
+    refuse_simplex_install 'its config.json is not a regular file'
+  fi
+  data_root="$root"
+}
+
 data_root="${LINGER_COMPUTER_DATA_DIR:-}"
 if [[ -z "$data_root" ]]; then
   data_root="$(launcher_data_root "$launcher" || printf '%s' "$home_directory/.local/share/linger/computers/$environment_name")"
+fi
+# Only a fresh install of this environment adopts a Simplex Computer: an
+# existing Linger launcher or enrollment, an explicit install root or config,
+# and the Daemon's self-update never do.
+if is_stage_mode || [[ -n "${LINGER_COMPUTER_DATA_DIR:-}" ]] || [[ -n "${LINGER_COMPUTER_CONFIG:-}" ]] ||
+  [[ -e "$launcher" ]] || [[ -L "$launcher" ]] || [[ -e "$data_root/config.json" ]] || [[ -L "$data_root/config.json" ]]; then
+  if [[ -n "$migrate_from" ]] && [[ "$migrate_from" != none ]]; then
+    printf 'LINGER_COMPUTER_MIGRATE_FROM applies only to a first install of %s without LINGER_COMPUTER_DATA_DIR or LINGER_COMPUTER_CONFIG. Nothing was changed.\n' "$command_name" >&2
+    exit 2
+  fi
+else
+  select_simplex_install
+  [[ -z "$simplex_launcher" ]] || assert_simplex_install
 fi
 active_bundle_file="$data_root/active-bundle"
 web_origin_file="$data_root/web-origin"
@@ -676,6 +842,46 @@ restore_private_file() {
   fi
 }
 
+simplex_set_aside=""
+
+# set_aside_simplex_upgrade_state moves a Simplex install root's upgrade state
+# into the temporary directory, which rollback restores from and success
+# deletes.
+set_aside_simplex_upgrade_state() {
+  local name
+  simplex_set_aside="$temporary_directory/simplex-upgrade-state"
+  mkdir -m 700 "$simplex_set_aside"
+  for name in upgrade-pending upgrade-failed staged-upgrade; do
+    if [[ -e "$data_root/$name" ]] || [[ -L "$data_root/$name" ]]; then
+      mv "$data_root/$name" "$simplex_set_aside/$name"
+    fi
+  done
+}
+
+restore_simplex_upgrade_state() {
+  local name
+  [[ -n "$simplex_set_aside" ]] && [[ -d "$simplex_set_aside" ]] || return 0
+  for name in upgrade-pending upgrade-failed staged-upgrade; do
+    if [[ -e "$simplex_set_aside/$name" ]] || [[ -L "$simplex_set_aside/$name" ]]; then
+      rm -rf "${data_root:?}/$name" && mv "$simplex_set_aside/$name" "$data_root/$name" || return 1
+    fi
+  done
+}
+
+# retire_simplex_commands removes the converted Simplex launcher, and the
+# Simplex dispatcher once no Simplex environment is left, or a single-environment
+# Simplex launcher of this install root.
+retire_simplex_commands() {
+  local legacy="$bin_directory/simplex-computer"
+  rm -f "$simplex_launcher"
+  [[ -f "$legacy" ]] && [[ ! -L "$legacy" ]] || return 0
+  if grep -Fqx "$simplex_dispatcher_marker" "$legacy"; then
+    [[ -n "$(simplex_launchers)" ]] || rm -f "$legacy"
+  elif grep -Fqx "$simplex_v1_launcher_marker" "$legacy" && [[ "$(simplex_launcher_data_root "$legacy")" == "$data_root" ]]; then
+    rm -f "$legacy"
+  fi
+}
+
 restore_old_installation() {
   local restore_failed=0
   local active_pointer_restored=0
@@ -730,6 +936,7 @@ restore_old_installation() {
       rm -rf "$new_bundle"
     fi
   fi
+  restore_simplex_upgrade_state || restore_failed=1
   if (( daemon_stopped == 1 )); then
     if (( active_pointer_restored == 0 || launcher_restored == 0 )); then
       printf '%s\n' 'Rollback could not safely restore the old daemon entrypoints.' >&2
@@ -1088,6 +1295,12 @@ if [[ -n "$old_active_bundle_name" ]] && [[ -d "$data_root/$old_active_bundle_na
   fi
   old_lifecycle_cli="$data_root/$old_active_bundle_name/cli/linger-computer"
 fi
+if [[ -n "$simplex_launcher" ]]; then
+  # The Simplex launcher stops and, on rollback, restarts its own daemon. Its
+  # bundle is never kept as a Linger rollback target, so success removes it.
+  old_active_bundle_name=""
+  old_lifecycle_cli="$simplex_launcher"
+fi
 
 # run_old_cli runs the installed bundle's CLI once verify_old_lifecycle_cli
 # has kept it.
@@ -1226,7 +1439,12 @@ if ! is_stage_mode && [[ -e "$launcher" ]] && [[ -z "$old_active_bundle_name" ]]
   printf 'The previous Local Computer installation is incomplete, so the installer cannot stop its daemon. Stop any running linger-computer-daemon process, remove the orphan launcher at %s, and run the installer again.\n' "$launcher" >&2
   exit 1
 fi
-if [[ -e "$launcher" ]] || [[ -n "$old_active_bundle_name" ]]; then
+if [[ -n "$simplex_launcher" ]]; then
+  installation_action="migrated"
+  old_release_label="$(run_old_cli version 2>/dev/null | sed 's/^simplex-computer //' || true)"
+  progress_note "$(printf 'Moving %s (Simplex %s) to Linger %s in place; its Computer ID, credential, Agents and data stay in %s.' "$(basename "$simplex_launcher")" "$old_release_label" "$new_release_label" "$data_root")"
+  stop_idle_daemon run_old_daemon
+elif [[ -e "$launcher" ]] || [[ -n "$old_active_bundle_name" ]]; then
   installation_action="upgraded"
   # An unverified lifecycle CLI is never run; the state checks below then fail closed.
   if verify_old_lifecycle_cli; then
@@ -1260,6 +1478,9 @@ if [[ "$install_stage_only" == prepare ]]; then
   exit 0
 fi
 
+# The Linger Daemon reads the upgrade markers at startup; Simplex ones would
+# point it back at the Simplex bundle.
+[[ -z "$simplex_launcher" ]] || set_aside_simplex_upgrade_state
 new_bundle_name="lib-${app_sha256:0:16}-$$"
 new_bundle="$data_root/$new_bundle_name"
 switched=1
@@ -1345,9 +1566,17 @@ new_deps_to_keep="$(bundle_deps_directory "$new_bundle")"
 previous_deps_to_keep="$(bundle_deps_directory "$data_root/$previous_bundle_to_keep" 2>/dev/null || printf '%s' "$new_deps_to_keep")"
 find "$data_root" -mindepth 1 -maxdepth 1 -type d -name 'lib-*' ! -name "$new_bundle_name" ! -name "$previous_bundle_to_keep" -exec rm -rf {} +
 find "$data_root" -mindepth 1 -maxdepth 1 -type d -name 'deps-*' ! -name "$new_deps_to_keep" ! -name "$previous_deps_to_keep" -exec rm -rf {} +
+[[ -z "$simplex_launcher" ]] || retire_simplex_commands
 step_end
 elapsed="$(format_duration "$((SECONDS - installer_started))")"
-if [[ "$installation_action" == "upgraded" ]]; then
+if [[ "$installation_action" == "migrated" ]]; then
+  printf 'Simplex Computer %s moved to Linger Computer %s in %s.' "$old_release_label" "$new_release_label" "$elapsed"
+  if [[ -f "$data_root/config.json" ]]; then
+    printf ' It keeps its Computer ID, credential, Agents and data in %s.\n' "$data_root"
+  else
+    printf ' It had not signed in yet.\n'
+  fi
+elif [[ "$installation_action" == "upgraded" ]]; then
   printf 'Linger Computer upgraded from %s to %s in %s.\n' "$old_release_label" "$new_release_label" "$elapsed"
 else
   printf 'Linger Computer %s installed in %s.\n' "$new_release_label" "$elapsed"

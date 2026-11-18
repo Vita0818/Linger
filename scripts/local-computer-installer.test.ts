@@ -2,6 +2,7 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import {
   chmod,
   copyFile,
@@ -3035,6 +3036,749 @@ describe.concurrent(
         ).rejects.toMatchObject({ stderr: expect.stringContaining(message) });
       },
     );
+  },
+);
+
+// A Computer installed before Simplex became Linger, laid out the way the
+// Simplex 0.43 to 0.50 installer left it: the "environment" layout under
+// simplexai/computers/<environment>, or the earlier "single-root" layout under
+// simplexai/computer that a single-environment v1 launcher also runs.
+interface SimplexInstall {
+  readonly root: string;
+  readonly launcher: string;
+  readonly legacyCommand: string;
+  readonly bundle: string;
+  readonly preserved: readonly string[];
+}
+
+const simplexToken = "sr1.fixture-simplex-credential";
+
+const writeSimplexInstall = async (
+  fixture: { readonly home: string },
+  options: {
+    readonly origin: string;
+    readonly environment: string;
+    readonly layout?: "environment" | "single-root";
+    readonly configured?: boolean;
+  },
+): Promise<SimplexInstall> => {
+  const layout = options.layout ?? "environment";
+  const share = path.join(fixture.home, ".local/share/simplexai");
+  const root =
+    layout === "environment"
+      ? path.join(share, "computers", options.environment)
+      : path.join(share, "computer");
+  const bin = path.join(fixture.home, ".local/bin");
+  const command = `simplex-computer-${options.environment}`;
+  const bundle = "lib-acddc26ca8611cdb-4174726";
+  const deps = "deps-48c5762a767cf189";
+  await mkdir(path.join(root, bundle, "cli"), { recursive: true, mode: 0o700 });
+  await mkdir(path.join(root, bundle, "daemon"), { recursive: true });
+  await mkdir(path.join(root, bundle, "installer"), { recursive: true });
+  await mkdir(path.join(root, deps, "runtime/bin"), { recursive: true });
+  await mkdir(path.join(root, deps, "computer-tools"), { recursive: true });
+  await mkdir(bin, { recursive: true, mode: 0o700 });
+  await chmod(path.join(fixture.home, ".local/share"), 0o700);
+  await chmod(share, 0o700);
+  await chmod(root, 0o700);
+  await writeFile(
+    path.join(root, deps, "runtime/bin/node"),
+    '#!/bin/sh\nexec "$LINGER_INSTALL_TEST_HOST_NODE" "$@"\n',
+    { mode: 0o755 },
+  );
+  await writeFile(
+    path.join(root, deps, ".sha256"),
+    `48c5762a767cf189${"0".repeat(48)}\n`,
+    { mode: 0o600 },
+  );
+  await symlink(`../${deps}/runtime`, path.join(root, bundle, "runtime"));
+  await symlink(
+    `../../${deps}/computer-tools`,
+    path.join(root, bundle, "cli/computer-tools"),
+  );
+  await writeFile(
+    path.join(root, bundle, "app-sha256"),
+    `acddc26ca8611cdb${"0".repeat(48)}\n`,
+    { mode: 0o600 },
+  );
+  await writeFile(
+    path.join(root, bundle, "daemon/simplex-computer-daemon"),
+    "#!/bin/sh\nexit 0\n",
+    { mode: 0o755 },
+  );
+  await writeFile(
+    path.join(root, bundle, "installer/simplex-computer.sh"),
+    "#!/usr/bin/env bash\nexit 1\n",
+    { mode: 0o755 },
+  );
+  await writeFile(
+    path.join(root, bundle, "cli/simplex-computer.mjs"),
+    `import { appendFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+if (args[0] === "daemon") args.shift();
+const log = process.env.LINGER_INSTALL_TEST_INVOCATIONS;
+const marker = process.env.LINGER_INSTALL_TEST_SIMPLEX_RUNNING;
+const config = process.env.SIMPLEX_COMPUTER_CONFIG;
+if (args[0] === "version") process.stdout.write("simplex-computer 0.50.0\\n");
+else if (args[0] === "status") {
+  if (!config || !existsSync(config)) {
+    process.stdout.write(JSON.stringify({ version: 1, config: { configured: false, path: config }, daemon: { state: "error" }, runtimes: [], runners: [] }) + "\\n");
+    process.exit(10);
+  }
+  const running = Boolean(marker && existsSync(marker));
+  process.stdout.write(JSON.stringify({ version: 1, config: { configured: true, path: config }, daemon: { state: running ? "running" : "stopped", daemon_version: "0.50.0", gateway_state: running ? "connected" : "disconnected", reconciled: running, active_operations: Number(process.env.LINGER_INSTALL_TEST_SIMPLEX_ACTIVE_OPERATIONS || 0) }, runtimes: [], runners: [] }) + "\\n");
+} else if (args[0] === "stop") {
+  if (log) appendFileSync(log, "simplex-stop:" + args.slice(1).join(" ") + ":" + config + "\\n");
+  if (marker) rmSync(marker, { force: true });
+} else if (args[0] === "start") {
+  if (log) appendFileSync(log, "simplex-start\\n");
+  if (marker) writeFileSync(marker, "1");
+} else process.exit(1);
+`,
+  );
+  await writeFile(
+    path.join(root, bundle, "cli/simplex-computer"),
+    '#!/bin/sh\nexec "$LINGER_INSTALL_TEST_HOST_NODE" "$(dirname "$0")/simplex-computer.mjs" "$@"\n',
+    { mode: 0o755 },
+  );
+  await writeFile(path.join(root, "active-bundle"), `${bundle}\n`, {
+    mode: 0o600,
+  });
+  await writeFile(path.join(root, "web-origin"), `${options.origin}\n`, {
+    mode: 0o600,
+  });
+  await writeFile(
+    path.join(root, "upgrade-pending"),
+    `{"previous_bundle":"${bundle}","target_app_sha256":"${"1".repeat(64)}","created_at":"2026-11-10T06:10:00Z"}\n`,
+    { mode: 0o600 },
+  );
+  const preserved: string[] = [];
+  if (options.configured !== false) {
+    const revision = path.join(
+      root,
+      "setup-revisions/9522d609-9255-4ebf-9423-384479bbb91a",
+    );
+    await mkdir(revision, { recursive: true, mode: 0o700 });
+    await writeFile(path.join(revision, "runner-token"), `${simplexToken}\n`, {
+      mode: 0o600,
+    });
+    await writeFile(
+      path.join(revision, "computer-id"),
+      "computer_1cd2557bfe7c0bf3b6af799ca5825c89\n",
+      { mode: 0o600 },
+    );
+    await mkdir(path.join(root, "state/runtime-homes/codex/002b68bb"), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await writeFile(
+      path.join(root, "state/daemon-identity.json"),
+      '{"public_key":"fixture-public","private_key":"fixture-private"}\n',
+      { mode: 0o600 },
+    );
+    // Codex records absolute paths under the install root; they must stay valid.
+    await writeFile(
+      path.join(root, "state/runtime-homes/codex/002b68bb/config.toml"),
+      `model_catalog_json = '${root}/state/runtime-homes/codex/002b68bb/.simplex-config/catalog'\n`,
+      { mode: 0o600 },
+    );
+    await writeFile(
+      path.join(root, "config.json"),
+      `${JSON.stringify({
+        runner_id: "computer_1cd2557bfe7c0bf3b6af799ca5825c89",
+        credential_expires_at: "2036-11-01T07:17:46Z",
+        display_name: "Fixture Simplex Computer",
+        gateway: {
+          url: "wss://ci-local-xspace.example.test/v1/runner-gateway",
+          token_file: path.join(revision, "runner-token"),
+        },
+        state_directory: path.join(root, "state"),
+        workspace_grants: [
+          {
+            grant_id: "grant_fixture",
+            tenant_id: "tenant_fixture",
+            root_path: path.join(root, "state/workspaces"),
+            mode: "workspace-write",
+            scope: "owner",
+          },
+        ],
+      })}\n`,
+      { mode: 0o600 },
+    );
+    preserved.push(
+      "config.json",
+      "setup-revisions/9522d609-9255-4ebf-9423-384479bbb91a/runner-token",
+      "setup-revisions/9522d609-9255-4ebf-9423-384479bbb91a/computer-id",
+      "state/daemon-identity.json",
+      "state/runtime-homes/codex/002b68bb/config.toml",
+    );
+  }
+  const launcher = path.join(bin, command);
+  await writeFile(
+    launcher,
+    `#!/bin/sh
+set -eu
+# simplexai-computer-launcher-v2
+# web-origin ${options.origin}
+data_root="\${SIMPLEX_COMPUTER_DATA_DIR:-${root}}"
+SIMPLEX_COMPUTER_COMMAND=${command}; export SIMPLEX_COMPUTER_COMMAND
+active_file="$data_root/active-bundle"
+test -f "$active_file" || { echo "simplex-computer installation is incomplete" >&2; exit 1; }
+IFS= read -r bundle_name < "$active_file"
+case "$bundle_name" in lib-[0-9A-Za-z._-]*) ;; *) echo "simplex-computer bundle metadata is invalid" >&2; exit 1 ;; esac
+if [ -z "\${SIMPLEX_WEB_URL+x}" ] && [ -f "$data_root/web-origin" ]; then IFS= read -r SIMPLEX_WEB_URL < "$data_root/web-origin"; export SIMPLEX_WEB_URL; fi
+if [ -z "\${SIMPLEX_COMPUTER_CONFIG+x}" ]; then SIMPLEX_COMPUTER_CONFIG="$data_root/config.json"; export SIMPLEX_COMPUTER_CONFIG; fi
+exec "$data_root/$bundle_name/cli/simplex-computer" "$@"
+`,
+    { mode: 0o755 },
+  );
+  const legacyCommand = path.join(bin, "simplex-computer");
+  await writeFile(
+    legacyCommand,
+    layout === "environment"
+      ? `#!/bin/sh
+set -eu
+# simplexai-computer-dispatcher-v1
+bin_directory='${bin}'
+count=0
+for candidate in "$bin_directory"/simplex-computer-*; do
+  [ -f "$candidate" ] && [ -x "$candidate" ] && grep -Fqx '# simplexai-computer-launcher-v2' "$candidate" || continue
+  count=$((count + 1))
+done
+exit 2
+`
+      : `#!/bin/sh
+set -eu
+# simplexai-computer-launcher-v1
+data_root="\${SIMPLEX_COMPUTER_DATA_DIR:-${root}}"
+active_file="$data_root/active-bundle"
+exec "$data_root/$(cat "$active_file")/cli/simplex-computer" "$@"
+`,
+    { mode: 0o755 },
+  );
+  return { root, launcher, legacyCommand, bundle, preserved };
+};
+
+const readPreserved = async (install: SimplexInstall) =>
+  Promise.all(
+    install.preserved.map((file) =>
+      readFile(path.join(install.root, file), "utf8"),
+    ),
+  );
+
+const pathExists = async (target: string) =>
+  lstat(target).then(
+    () => true,
+    () => false,
+  );
+
+// selfSignedCertificate writes a loopback certificate that a Node child trusts
+// through NODE_EXTRA_CA_CERTS.
+const selfSignedCertificate = async (root: string) => {
+  const key = path.join(root, "tls-key.pem");
+  const cert = path.join(root, "tls-cert.pem");
+  await execFileAsync("openssl", [
+    "req",
+    "-x509",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-days",
+    "1",
+    "-subj",
+    "/CN=127.0.0.1",
+    "-addext",
+    "subjectAltName=IP:127.0.0.1",
+    "-keyout",
+    key,
+    "-out",
+    cert,
+  ]);
+  return {
+    key: await readFile(key),
+    cert: await readFile(cert),
+    certFile: cert,
+  };
+};
+
+// runnerGatewayServer answers a Runner Gateway upgrade the way the Agent
+// Service does: 101 for a credential it issued, 401 otherwise.
+const runnerGatewayServer = async (
+  tls: { readonly key: Buffer; readonly cert: Buffer },
+  acceptedToken: string,
+) => {
+  const requests: string[] = [];
+  const server = createHttpsServer(
+    { key: tls.key, cert: tls.cert },
+    (_request, response) => {
+      response.writeHead(404).end();
+    },
+  );
+  server.on("upgrade", (request, socket) => {
+    requests.push(`${request.url ?? ""} ${request.headers.upgrade ?? ""}`);
+    socket.end(
+      request.headers.authorization === `Bearer ${acceptedToken}`
+        ? "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+        : "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nContent-Length: 0\r\n\r\n",
+    );
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Runner Gateway fixture did not bind to a TCP port");
+  }
+  return {
+    origin: `https://127.0.0.1:${address.port}`,
+    requests,
+    close: async () => {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    },
+  };
+};
+
+describe.concurrent(
+  "Simplex-era Computer conversion",
+  { timeout: 60_000 },
+  () => {
+    const simplexEnvironment = (fixture: {
+      readonly root: string;
+      readonly environment: NodeJS.ProcessEnv;
+    }) => ({
+      ...fixture.environment,
+      LINGER_INSTALL_TEST_SIMPLEX_RUNNING: path.join(
+        fixture.root,
+        "simplex-running",
+      ),
+    });
+
+    it("moves a running Simplex Computer of this origin to Linger in place", async ({
+      expect,
+    }) => {
+      const fixture = await installerFixture("1.2.3");
+      const install = await writeSimplexInstall(fixture, {
+        origin: "http://localhost:3000",
+        environment: "local",
+      });
+      const before = await readPreserved(install);
+      const environment = simplexEnvironment(fixture);
+      await writeFile(environment.LINGER_INSTALL_TEST_SIMPLEX_RUNNING!, "1");
+
+      const result = await runInstaller({ ...fixture, environment });
+
+      expect(result.stdout).toContain(
+        `Moving simplex-computer-local (Simplex 0.50.0) to Linger 1.2.3 in place; its Computer ID, credential, Agents and data stay in ${install.root}.`,
+      );
+      expect(result.stdout).toContain(
+        `Simplex Computer 0.50.0 moved to Linger Computer 1.2.3 in `,
+      );
+      expect(result.stdout).toMatch(
+        /Next:\n {2}\S*linger-computer-local-3000 daemon status\n/u,
+      );
+      const invocations = await readFile(fixture.invocations, "utf8");
+      expect(invocations).toContain(
+        `simplex-stop:--if-idle:${path.join(install.root, "config.json")}\n`,
+      );
+      expect(invocations.indexOf("simplex-stop")).toBeLessThan(
+        invocations.indexOf("start\n"),
+      );
+      expect(invocations).not.toContain("simplex-start");
+      expect(invocations).not.toContain("login:");
+      await expect(readPreserved(install)).resolves.toEqual(before);
+      await expect(
+        readFile(environment.LINGER_INSTALL_TEST_RUNNING!, "utf8"),
+      ).resolves.toBe("1");
+      expect(
+        await pathExists(environment.LINGER_INSTALL_TEST_SIMPLEX_RUNNING!),
+      ).toBe(false);
+
+      const launcherSource = await readFile(fixture.launcher, "utf8");
+      expect(launcherSource).toContain(
+        `data_root="\${LINGER_COMPUTER_DATA_DIR:-${install.root}}"`,
+      );
+      // Only the adopted install root keeps the old directory name.
+      expect(launcherSource.replaceAll(install.root, "<root>")).not.toMatch(
+        /simplex/iu,
+      );
+      expect(await pathExists(install.launcher)).toBe(false);
+      expect(await pathExists(install.legacyCommand)).toBe(false);
+      expect(await pathExists(fixture.installRoot)).toBe(false);
+      const bundle = await activeBundleName(install.root);
+      expect(bundle).not.toBe(install.bundle);
+      expect(
+        await pathExists(
+          path.join(install.root, bundle, "daemon/linger-computer-daemon"),
+        ),
+      ).toBe(true);
+      const entries = await readdir(install.root);
+      expect(entries.filter((name) => /^(lib|deps)-/u.test(name))).toHaveLength(
+        2,
+      );
+      expect(entries).not.toContain(install.bundle);
+      expect(entries).not.toContain("deps-48c5762a767cf189");
+      expect(entries).not.toContain("upgrade-pending");
+      expect(entries.filter((name) => name.startsWith(".install."))).toEqual(
+        [],
+      );
+      await expect(
+        readFile(path.join(install.root, "web-origin"), "utf8"),
+      ).resolves.toBe("http://localhost:3000\n");
+    });
+
+    it("rolls back to the running Simplex Computer when the Linger Daemon does not reconnect", async ({
+      expect,
+    }) => {
+      const fixture = await installerFixture("1.2.3");
+      const install = await writeSimplexInstall(fixture, {
+        origin: "http://localhost:3000",
+        environment: "local",
+      });
+      const pending = await readFile(
+        path.join(install.root, "upgrade-pending"),
+        "utf8",
+      );
+      const environment = {
+        ...simplexEnvironment(fixture),
+        LINGER_INSTALL_TEST_GATEWAY_STATE: "authentication-failed",
+      };
+      await writeFile(environment.LINGER_INSTALL_TEST_SIMPLEX_RUNNING, "1");
+
+      await expect(
+        runInstaller({ ...fixture, environment }),
+      ).rejects.toMatchObject({
+        stderr: expect.stringContaining("rolling back"),
+      });
+
+      const invocations = await readFile(fixture.invocations, "utf8");
+      expect(invocations).toMatch(
+        /simplex-stop:[\s\S]*start\n[\s\S]*stop\n[\s\S]*simplex-start\n$/u,
+      );
+      await expect(
+        readFile(environment.LINGER_INSTALL_TEST_SIMPLEX_RUNNING, "utf8"),
+      ).resolves.toBe("1");
+      expect(await pathExists(fixture.launcher)).toBe(false);
+      expect(await pathExists(install.launcher)).toBe(true);
+      expect(await pathExists(install.legacyCommand)).toBe(true);
+      await expect(activeBundleName(install.root)).resolves.toBe(
+        install.bundle,
+      );
+      await expect(
+        readFile(path.join(install.root, "upgrade-pending"), "utf8"),
+      ).resolves.toBe(pending);
+      await expect(
+        readFile(path.join(install.root, "web-origin"), "utf8"),
+      ).resolves.toBe("http://localhost:3000\n");
+      expect(
+        (await readdir(install.root)).filter((name) => name.startsWith("lib-")),
+      ).toEqual([install.bundle]);
+    });
+
+    it("refuses while a Simplex Operation is active and changes nothing", async ({
+      expect,
+    }) => {
+      const fixture = await installerFixture("1.2.3");
+      const install = await writeSimplexInstall(fixture, {
+        origin: "http://localhost:3000",
+        environment: "local",
+      });
+      const environment = {
+        ...simplexEnvironment(fixture),
+        LINGER_INSTALL_TEST_SIMPLEX_ACTIVE_OPERATIONS: "1",
+      };
+      await writeFile(environment.LINGER_INSTALL_TEST_SIMPLEX_RUNNING, "1");
+
+      await expect(
+        runInstaller({ ...fixture, environment }),
+      ).rejects.toMatchObject({
+        stderr: expect.stringContaining(
+          "Cannot upgrade while 1 Agent Operation is active",
+        ),
+      });
+
+      await expect(readFile(fixture.invocations, "utf8")).rejects.toThrow();
+      await expect(
+        readFile(environment.LINGER_INSTALL_TEST_SIMPLEX_RUNNING, "utf8"),
+      ).resolves.toBe("1");
+      expect(await pathExists(fixture.launcher)).toBe(false);
+      await expect(activeBundleName(install.root)).resolves.toBe(
+        install.bundle,
+      );
+    });
+
+    it("stops before changing anything for a Simplex Computer of another origin", async ({
+      expect,
+    }) => {
+      const fixture = await installerFixture("1.2.3");
+      const install = await writeSimplexInstall(fixture, {
+        origin: "https://ci-local-xspace.example.test",
+        environment: "ci-local-xspace",
+      });
+
+      const failure = await runInstaller(fixture).then(
+        () => undefined,
+        (error: { readonly code: number; readonly stderr: string }) => error,
+      );
+
+      expect(failure?.code).toBe(1);
+      expect(failure?.stderr).toContain(
+        "simplex-computer-ci-local-xspace   https://ci-local-xspace.example.test",
+      );
+      expect(failure?.stderr).toContain(
+        "LINGER_COMPUTER_MIGRATE_FROM=simplex-computer-ci-local-xspace",
+      );
+      expect(failure?.stderr).toContain("LINGER_COMPUTER_MIGRATE_FROM=none");
+      expect(await pathExists(fixture.installRoot)).toBe(false);
+      expect(await pathExists(fixture.launcher)).toBe(false);
+      await expect(activeBundleName(install.root)).resolves.toBe(
+        install.bundle,
+      );
+    });
+
+    it("installs a separate Computer and leaves the Simplex one when told none", async ({
+      expect,
+    }) => {
+      const fixture = await installerFixture("1.2.3");
+      const install = await writeSimplexInstall(fixture, {
+        origin: "https://ci-local-xspace.example.test",
+        environment: "ci-local-xspace",
+      });
+
+      const result = await runInstaller({
+        ...fixture,
+        environment: {
+          ...fixture.environment,
+          LINGER_COMPUTER_MIGRATE_FROM: "none",
+        },
+      });
+
+      expect(result.stdout).toContain("Linger Computer 1.2.3 installed in ");
+      expect(result.stdout).toMatch(
+        /Next:\n {2}\S*linger-computer-local-3000 login\n/u,
+      );
+      expect(
+        await pathExists(path.join(fixture.installRoot, "active-bundle")),
+      ).toBe(true);
+      expect(await pathExists(install.launcher)).toBe(true);
+      await expect(activeBundleName(install.root)).resolves.toBe(
+        install.bundle,
+      );
+    });
+
+    it("moves the Simplex Computer of another origin that LINGER_COMPUTER_MIGRATE_FROM names, single-root layout", async ({
+      expect,
+    }) => {
+      const fixture = await installerFixture("1.2.3");
+      const install = await writeSimplexInstall(fixture, {
+        origin: "http://leoxing4090.192.168.10.117.nip.io",
+        environment: "leoxing4090",
+        layout: "single-root",
+      });
+      const before = await readPreserved(install);
+
+      const result = await runInstaller({
+        ...fixture,
+        environment: {
+          ...simplexEnvironment(fixture),
+          LINGER_COMPUTER_MIGRATE_FROM: "simplex-computer-leoxing4090",
+        },
+      });
+
+      expect(install.root).toBe(
+        path.join(fixture.home, ".local/share/simplexai/computer"),
+      );
+      expect(result.stdout).toContain(
+        "Simplex Computer 0.50.0 moved to Linger Computer 1.2.3 in ",
+      );
+      // A stopped Simplex daemon stays stopped; the Linger one is started next.
+      expect(result.stdout).toMatch(
+        /Next:\n {2}\S*linger-computer-local-3000 daemon start\n/u,
+      );
+      await expect(readPreserved(install)).resolves.toEqual(before);
+      expect(await readFile(fixture.launcher, "utf8")).toContain(
+        `data_root="\${LINGER_COMPUTER_DATA_DIR:-${install.root}}"`,
+      );
+      expect(await pathExists(install.launcher)).toBe(false);
+      expect(await pathExists(install.legacyCommand)).toBe(false);
+    });
+
+    it("keeps the Simplex dispatcher while another Simplex environment remains", async ({
+      expect,
+    }) => {
+      const fixture = await installerFixture("1.2.3");
+      const install = await writeSimplexInstall(fixture, {
+        origin: "http://localhost:3000",
+        environment: "local",
+      });
+      const other = await writeSimplexInstall(fixture, {
+        origin: "https://other.example.test",
+        environment: "other",
+      });
+
+      await runInstaller({
+        ...fixture,
+        environment: simplexEnvironment(fixture),
+      });
+
+      expect(await pathExists(install.launcher)).toBe(false);
+      expect(await pathExists(other.launcher)).toBe(true);
+      expect(await pathExists(install.legacyCommand)).toBe(true);
+      await expect(activeBundleName(other.root)).resolves.toBe(other.bundle);
+    });
+
+    it("moves an unconfigured Simplex install and points Next at login", async ({
+      expect,
+    }) => {
+      const fixture = await installerFixture("1.2.3");
+      const install = await writeSimplexInstall(fixture, {
+        origin: "http://localhost:3000",
+        environment: "local",
+        configured: false,
+      });
+
+      const result = await runInstaller({
+        ...fixture,
+        environment: simplexEnvironment(fixture),
+      });
+
+      expect(result.stdout).toContain("It had not signed in yet.");
+      expect(result.stdout).toMatch(
+        /Next:\n {2}\S*linger-computer-local-3000 login\n/u,
+      );
+      expect(await pathExists(install.launcher)).toBe(false);
+    });
+
+    it("refuses a Simplex install that runs from another config and prints the manual steps", async ({
+      expect,
+    }) => {
+      const fixture = await installerFixture("1.2.3");
+      const install = await writeSimplexInstall(fixture, {
+        origin: "http://localhost:3000",
+        environment: "local",
+      });
+
+      await expect(
+        runInstaller({
+          ...fixture,
+          environment: {
+            ...fixture.environment,
+            SIMPLEX_COMPUTER_CONFIG: "/etc/simplex/config.json",
+          },
+        }),
+      ).rejects.toMatchObject({
+        stderr: expect.stringContaining(
+          "Cannot move simplex-computer-local to Linger automatically: SIMPLEX_COMPUTER_DATA_DIR or SIMPLEX_COMPUTER_CONFIG is set",
+        ),
+      });
+      expect(await pathExists(fixture.installRoot)).toBe(false);
+      expect(await pathExists(install.launcher)).toBe(true);
+    });
+
+    it("never converts a Simplex Computer when this environment already has a Linger installation", async ({
+      expect,
+    }) => {
+      const fixture = await installerFixture("1.2.3");
+      await runInstaller(fixture);
+      const install = await writeSimplexInstall(fixture, {
+        origin: "http://localhost:3000",
+        environment: "local",
+      });
+
+      const result = await runInstaller({
+        ...fixture,
+        artifact: sharedArtifact("1.2.4"),
+      });
+
+      expect(result.stdout).toContain(
+        "Linger Computer upgraded from 1.2.3 to 1.2.4 in ",
+      );
+      expect(await pathExists(install.launcher)).toBe(true);
+      await expect(
+        runInstaller({
+          ...fixture,
+          environment: {
+            ...fixture.environment,
+            LINGER_COMPUTER_MIGRATE_FROM: "simplex-computer-local",
+          },
+        }),
+      ).rejects.toMatchObject({ code: 2 });
+    });
+
+    it("converts a Simplex Computer of another origin once this HTTPS origin accepts its credential", async ({
+      expect,
+    }) => {
+      const fixture = await installerFixture("1.2.3");
+      const tls = await selfSignedCertificate(fixture.root);
+      const accepting = await runnerGatewayServer(tls, simplexToken);
+      try {
+        const install = await writeSimplexInstall(fixture, {
+          origin: "https://ci-local-xspace.example.test",
+          environment: "ci-local-xspace",
+        });
+        const { launcher } = serverEnvironment(fixture, accepting);
+
+        const result = await runInstaller({
+          ...fixture,
+          environment: {
+            ...simplexEnvironment(fixture),
+            LINGER_WEB_URL: accepting.origin,
+            NODE_EXTRA_CA_CERTS: tls.certFile,
+          },
+        });
+
+        expect(accepting.requests).toEqual(["/v1/runner-gateway websocket"]);
+        expect(result.stdout).toContain(
+          "Simplex Computer 0.50.0 moved to Linger Computer 1.2.3 in ",
+        );
+        expect(await readFile(launcher, "utf8")).toContain(
+          `data_root="\${LINGER_COMPUTER_DATA_DIR:-${install.root}}"`,
+        );
+        expect(await pathExists(install.launcher)).toBe(false);
+      } finally {
+        await accepting.close();
+      }
+    });
+
+    it("stops when this HTTPS origin refuses the Simplex credential", async ({
+      expect,
+    }) => {
+      const fixture = await installerFixture("1.2.3");
+      const tls = await selfSignedCertificate(fixture.root);
+      const refusing = await runnerGatewayServer(tls, "sr1.another-deployment");
+      try {
+        const install = await writeSimplexInstall(fixture, {
+          origin: "https://ci-local-xspace.example.test",
+          environment: "ci-local-xspace",
+        });
+
+        await expect(
+          runInstaller({
+            ...fixture,
+            environment: {
+              ...simplexEnvironment(fixture),
+              LINGER_WEB_URL: refusing.origin,
+              NODE_EXTRA_CA_CERTS: tls.certFile,
+            },
+          }),
+        ).rejects.toMatchObject({
+          code: 1,
+          stderr: expect.stringContaining(
+            "did not confirm it as one of its Computers",
+          ),
+        });
+        expect(refusing.requests).toEqual(["/v1/runner-gateway websocket"]);
+        expect(
+          await pathExists(serverEnvironment(fixture, refusing).launcher),
+        ).toBe(false);
+        expect(await pathExists(install.launcher)).toBe(true);
+      } finally {
+        await refusing.close();
+      }
+    });
   },
 );
 
