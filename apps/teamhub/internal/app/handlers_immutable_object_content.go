@@ -7,7 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"path/filepath"
+	"path"
 	"strconv"
 	"strings"
 
@@ -163,7 +163,7 @@ var inlineImmutableMediaTypes = map[string]map[string]struct{}{
 
 func immutableContentDisposition(record immutableContentMetadata) string {
 	disposition := "attachment"
-	extension := strings.ToLower(filepath.Ext(record.Filename))
+	extension := strings.ToLower(path.Ext(record.Filename))
 	mediaType, _, err := mime.ParseMediaType(record.MediaType)
 	if err == nil {
 		if allowed, ok := inlineImmutableMediaTypes[extension]; ok {
@@ -193,8 +193,8 @@ func isPurePrintableASCII(value string) bool {
 }
 
 func asciiDispositionFallback(filename string) string {
-	ext := filepath.Ext(filename)
-	if !isPurePrintableASCII(ext) || strings.ContainsAny(ext, `"/\; `) {
+	ext := path.Ext(filename)
+	if ext == "." || !isPurePrintableASCII(ext) || strings.ContainsAny(ext, `"/\; `) {
 		ext = ""
 	}
 	stem := strings.TrimSuffix(filename, ext)

@@ -278,14 +278,15 @@ func resolveSharedDownloadFilename(title, storedFilename string) string {
 		}, value)
 		return strings.Join(strings.Fields(mapped), " ")
 	}
+	storedBase := clean(path.Base(strings.TrimSpace(storedFilename)))
 	name := clean(title)
 	if name == "" || name == "." || name == ".." {
-		name = clean(path.Base(strings.TrimSpace(storedFilename)))
+		name = storedBase
 	}
 	if name == "" || name == "." || name == ".." {
 		name = "document"
 	}
-	if ext := path.Ext(strings.TrimSpace(storedFilename)); ext != "" && !strings.EqualFold(path.Ext(name), ext) {
+	if ext := path.Ext(storedBase); ext != "" && ext != "." && ext != storedBase && !strings.EqualFold(path.Ext(name), ext) {
 		name += ext
 	}
 	return SafeSourceFilename(name)

@@ -4,9 +4,17 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"io"
+	"mime"
+	"net/http"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/simplexai-labs/linger/apps/teamhub/internal/document"
 )
@@ -188,4 +196,103 @@ func TestUnifiedDocumentLinkShareDownloadUsesDocumentTitle(t *testing.T) {
 			t.Fatalf("ordinary link download filename=%q want %q", downloaded.Filename, "WIN015-DOC-TITLE.md")
 		}
 	})
+}
+
+func TestSharedDocumentContentEndpointEmitsFilenameWireHeaders(t *testing.T) {
+	allowParallelIntegrationTest(t)
+	env, alice := newRoomDocumentRealtimeEnvWithRuntimeOptions(t, 0, 0, 0, roomDocumentRuntimeTestOptions{
+		revisionExport: true,
+	})
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	documentID := createCollaboratorTestDocument(t, env, alice, "shared-wire-headers-"+suffix)
+
+	status, _, body := env.request(alice, http.MethodPut, "/v0/documents/"+documentID+"/link-share", map[string]any{
+		"role":             "viewer",
+		"expected_version": 0,
+		"reset":            false,
+	}, "")
+	if status != http.StatusOK {
+		t.Fatalf("create link share status=%d body=%s", status, body)
+	}
+	var created struct {
+		Token string `json:"token"`
+	}
+	decode(t, body, &created)
+	if created.Token == "" {
+		t.Fatalf("missing link share token: %s", body)
+	}
+
+	postContent := func(t *testing.T, token string) (int, http.Header, []byte) {
+		t.Helper()
+		payload, err := json.Marshal(map[string]string{"token": token})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, env.server.URL+"/v0/shared-documents/content", bytes.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode, resp.Header, respBody
+	}
+
+	for _, tc := range []struct {
+		name          string
+		title         string
+		wantFilename  string
+		wantASCIIPart string
+	}{
+		{
+			name:         "ascii title",
+			title:        "WIN015-DOC-TITLE",
+			wantFilename: "WIN015-DOC-TITLE.md",
+		},
+		{
+			name:          "utf8 cjk title",
+			title:         "\u4e2d\u6587\u6587\u6863",
+			wantFilename:  "\u4e2d\u6587\u6587\u6863.md",
+			wantASCIIPart: `filename="document.md"`,
+		},
+		{
+			name:          "adversarial crlf quotes semicolons and percent",
+			title:         "100% \"Q1\"; \u6d4b\u8bd5\r\nline",
+			wantFilename:  "100% \"Q1\"; \u6d4b\u8bd5 line.md",
+			wantASCIIPart: `filename="100% Q1 line.md"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := env.pool.Exec(t.Context(), `UPDATE documents SET title=$1 WHERE id=$2`, tc.title, documentID); err != nil {
+				t.Fatal(err)
+			}
+			code, headers, content := postContent(t, created.Token)
+			if code != http.StatusOK || len(content) == 0 {
+				t.Fatalf("POST /v0/shared-documents/content status=%d body=%q", code, content)
+			}
+			encoded := headers.Get("X-Document-Filename")
+			decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+			if err != nil || string(decoded) != tc.wantFilename {
+				t.Fatalf("X-Document-Filename=%q decoded=%q err=%v want %q", encoded, string(decoded), err, tc.wantFilename)
+			}
+			disposition := headers.Get("Content-Disposition")
+			if strings.ContainsAny(disposition, "\r\n") {
+				t.Fatalf("Content-Disposition=%q must not contain raw line breaks", disposition)
+			}
+			if tc.wantASCIIPart != "" && !strings.Contains(disposition, tc.wantASCIIPart) {
+				t.Fatalf("Content-Disposition=%q missing %q", disposition, tc.wantASCIIPart)
+			}
+			mediaType, params, err := mime.ParseMediaType(disposition)
+			if err != nil || mediaType != "attachment" || params["filename"] != tc.wantFilename {
+				t.Fatalf("Content-Disposition=%q parsed=(%q, %v, %v) want filename=%q", disposition, mediaType, params, err, tc.wantFilename)
+			}
+		})
+	}
 }

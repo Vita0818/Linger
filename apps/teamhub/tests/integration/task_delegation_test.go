@@ -1,8 +1,10 @@
 package integration_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -220,6 +222,64 @@ func TestDelegatedRunningTasksAreCappedPerAgent(t *testing.T) {
 	}
 }
 
+func postAgentTaskJSON(
+	env *testEnv,
+	path, bearer string,
+	payload any,
+	extraHeaders ...http.Header,
+) (int, []byte, error) {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return 0, nil, err
+	}
+	request, err := http.NewRequest(http.MethodPost, env.server.URL+path, bytes.NewReader(encoded))
+	if err != nil {
+		return 0, nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if bearer != "" {
+		request.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	for _, headers := range extraHeaders {
+		for name, values := range headers {
+			for _, value := range values {
+				request.Header.Add(name, value)
+			}
+		}
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return response.StatusCode, nil, err
+	}
+	return response.StatusCode, body, nil
+}
+
+func postDelegatedTaskErr(
+	env *testEnv,
+	issued agentcredential.Issued,
+	invocation, name, requirement string,
+	headers ...http.Header,
+) (int, []byte, error) {
+	return postAgentTaskJSON(env, "/api/agent/v1/tasks", issued.AccessToken,
+		map[string]any{"invocation_id": mcpCreationInvocationID(invocation), "name": name, "requirement": requirement},
+		headers...)
+}
+
+func postTaskCommandErr(
+	env *testEnv,
+	issued agentcredential.Issued,
+	command string,
+	body map[string]any,
+	headers ...http.Header,
+) (int, []byte, error) {
+	return postAgentTaskJSON(env, "/api/agent/v1/tasks/"+command, issued.AccessToken, body, headers...)
+}
+
 func TestConcurrentTaskDelegationHasNoDeadlock(t *testing.T) {
 	allowParallelIntegrationTest(t)
 	env, _, issued, roomID := newAgentCLIIdentity(t)
@@ -243,14 +303,15 @@ func TestConcurrentTaskDelegationHasNoDeadlock(t *testing.T) {
 		type createOutcome struct {
 			code int
 			body []byte
+			err  error
 		}
 		done := make(chan createOutcome, 1)
 		go func() {
-			code, body := postDelegatedTask(
-				t, env, issued, "delegate-lock-order", "Lock order probe", "Must not deadlock with shared registration lock.",
+			code, body, reqErr := postDelegatedTaskErr(
+				env, issued, "delegate-lock-order", "Lock order probe", "Must not deadlock with shared registration lock.",
 				taskDelegationRoomContext(roomID),
 			)
-			done <- createOutcome{code: code, body: body}
+			done <- createOutcome{code: code, body: body, err: reqErr}
 		}()
 
 		// Give the delegation request a moment to reach its advisory/row locks if it blocks.
@@ -281,6 +342,9 @@ func TestConcurrentTaskDelegationHasNoDeadlock(t *testing.T) {
 				t.Fatal("delegation request timed out")
 			}
 		}
+		if outcome.err != nil {
+			t.Fatalf("delegation request under concurrent shared registration lock failed: %v", outcome.err)
+		}
 		if outcome.code != http.StatusOK {
 			t.Fatalf("delegation under concurrent shared registration lock=%d %s", outcome.code, outcome.body)
 		}
@@ -307,6 +371,7 @@ func TestConcurrentTaskDelegationHasNoDeadlock(t *testing.T) {
 			code   int
 			body   []byte
 			taskID string
+			err    error
 		}
 		results := make(chan result, concurrentCreates+1)
 
@@ -315,16 +380,18 @@ func TestConcurrentTaskDelegationHasNoDeadlock(t *testing.T) {
 				defer wait.Done()
 				ready.Done()
 				<-start
-				code, body := postDelegatedTask(
-					t, env, issued,
+				code, body, reqErr := postDelegatedTaskErr(
+					env, issued,
 					fmt.Sprintf("delegate-burst-%d", index),
 					fmt.Sprintf("Burst task %d", index),
 					"Run concurrently without deadlock.",
 					taskDelegationRoomContext(roomID),
 				)
 				var parsed delegatedTaskResponse
-				_ = json.Unmarshal(body, &parsed)
-				results <- result{name: fmt.Sprintf("create-%d", index), code: code, body: body, taskID: parsed.TaskID}
+				if reqErr == nil {
+					_ = json.Unmarshal(body, &parsed)
+				}
+				results <- result{name: fmt.Sprintf("create-%d", index), code: code, body: body, taskID: parsed.TaskID, err: reqErr}
 			}(index)
 		}
 
@@ -332,13 +399,13 @@ func TestConcurrentTaskDelegationHasNoDeadlock(t *testing.T) {
 			defer wait.Done()
 			ready.Done()
 			<-start
-			code, body := postTaskCommand(t, env, issued, "send", map[string]any{
+			code, body, reqErr := postTaskCommandErr(env, issued, "send", map[string]any{
 				"invocation_id": mcpCreationInvocationID("delegate-burst-wake"),
 				"task_id":       stopped.TaskID,
 				"message":       "Wake alongside concurrent creates.",
 				"steer":         false,
 			}, taskDelegationRoomContext(roomID))
-			results <- result{name: "wake", code: code, body: body, taskID: stopped.TaskID}
+			results <- result{name: "wake", code: code, body: body, taskID: stopped.TaskID, err: reqErr}
 		}()
 
 		ready.Wait()
@@ -348,6 +415,9 @@ func TestConcurrentTaskDelegationHasNoDeadlock(t *testing.T) {
 
 		createdIDs := map[string]struct{}{}
 		for item := range results {
+			if item.err != nil {
+				t.Fatalf("%s request failed: %v", item.name, item.err)
+			}
 			if item.code != http.StatusOK {
 				t.Fatalf("%s failed: status=%d body=%s", item.name, item.code, item.body)
 			}

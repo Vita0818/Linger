@@ -131,7 +131,10 @@ export function createTeamHubDocumentLinks(
 
 export function parseSharedDocumentFilename(headers: Headers): string | null {
   const encodedName = headers.get("X-Document-Filename");
-  if (encodedName !== null) return decodeBase64UrlUtf8(encodedName);
+  if (encodedName !== null) {
+    const decoded = decodeBase64UrlUtf8(encodedName);
+    if (decoded !== null) return decoded;
+  }
   return parseContentDispositionFilename(headers.get("Content-Disposition"));
 }
 
@@ -155,37 +158,136 @@ function decodeBase64UrlUtf8(encoded: string): string | null {
   }
 }
 
+function isHeaderWhitespace(character: string | undefined): boolean {
+  return (
+    character === " " ||
+    character === "\t" ||
+    character === "\r" ||
+    character === "\n"
+  );
+}
+
+function decodeRfc5987Value(raw: string): string | null {
+  const firstQuote = raw.indexOf("'");
+  const secondQuote = firstQuote >= 0 ? raw.indexOf("'", firstQuote + 1) : -1;
+  if (firstQuote <= 0 || secondQuote <= firstQuote) return null;
+  const charset = raw.slice(0, firstQuote).toLowerCase();
+  const encodedValue = raw.slice(secondQuote + 1);
+  if ((charset !== "utf-8" && charset !== "utf8") || encodedValue.length === 0)
+    return null;
+  try {
+    const decoded = decodeURIComponent(encodedValue);
+    return decoded.length > 0 ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
 function parseContentDispositionFilename(header: string | null): string | null {
   if (!header) return null;
-  const extended = /(?:^|;)\s*filename\*\s*=\s*(?:"([^"]*)"|([^;\s]+))/i.exec(
-    header,
-  );
-  if (extended) {
-    const raw = (extended[1] ?? extended[2] ?? "").trim();
-    const firstQuote = raw.indexOf("'");
-    const secondQuote = firstQuote >= 0 ? raw.indexOf("'", firstQuote + 1) : -1;
-    if (firstQuote > 0 && secondQuote > firstQuote) {
-      const charset = raw.slice(0, firstQuote).toLowerCase();
-      const encodedValue = raw.slice(secondQuote + 1);
-      if (
-        (charset === "utf-8" || charset === "utf8") &&
-        encodedValue.length > 0
-      ) {
-        try {
-          const decoded = decodeURIComponent(encodedValue);
-          if (decoded.length > 0) return decoded;
-        } catch {
-          // Fall through to the ASCII filename parameter when percent-encoding is invalid.
+  const firstSemicolon = header.indexOf(";");
+  if (firstSemicolon < 0) return null;
+
+  let index = firstSemicolon + 1;
+  let extendedFilename: string | null = null;
+  let fallbackFilename: string | null = null;
+
+  while (index < header.length) {
+    while (
+      index < header.length &&
+      (isHeaderWhitespace(header[index]) || header[index] === ";")
+    ) {
+      index += 1;
+    }
+    if (index >= header.length) break;
+
+    const nameStart = index;
+    while (
+      index < header.length &&
+      header[index] !== "=" &&
+      header[index] !== ";" &&
+      !isHeaderWhitespace(header[index])
+    ) {
+      index += 1;
+    }
+    const name = header.slice(nameStart, index).toLowerCase();
+
+    while (index < header.length && isHeaderWhitespace(header[index])) {
+      index += 1;
+    }
+    if (index >= header.length || header[index] !== "=") {
+      while (index < header.length && header[index] !== ";") index += 1;
+      continue;
+    }
+    index += 1;
+
+    while (index < header.length && isHeaderWhitespace(header[index])) {
+      index += 1;
+    }
+    if (index >= header.length) break;
+
+    if (header[index] === '"') {
+      index += 1;
+      let value = "";
+      let closed = false;
+      while (index < header.length) {
+        const character = header[index];
+        if (character === "\\") {
+          index += 1;
+          if (index < header.length) {
+            value += header[index];
+            index += 1;
+          }
+          continue;
         }
+        if (character === '"') {
+          closed = true;
+          index += 1;
+          break;
+        }
+        value += character;
+        index += 1;
       }
+      if (!closed) break;
+
+      while (index < header.length && isHeaderWhitespace(header[index])) {
+        index += 1;
+      }
+      const validDelimiter = index >= header.length || header[index] === ";";
+      if (!validDelimiter) {
+        while (index < header.length && header[index] !== ";") index += 1;
+        continue;
+      }
+      if (name === "filename" && fallbackFilename === null && value.length > 0)
+        fallbackFilename = value;
+      continue;
+    }
+
+    const valueStart = index;
+    while (
+      index < header.length &&
+      header[index] !== ";" &&
+      !isHeaderWhitespace(header[index])
+    ) {
+      index += 1;
+    }
+    const rawValue = header.slice(valueStart, index);
+    while (index < header.length && isHeaderWhitespace(header[index])) {
+      index += 1;
+    }
+    const validDelimiter = index >= header.length || header[index] === ";";
+    if (!validDelimiter) {
+      while (index < header.length && header[index] !== ";") index += 1;
+      continue;
+    }
+    if (rawValue.length === 0 || rawValue.includes('"')) continue;
+
+    if (name === "filename*" && extendedFilename === null) {
+      extendedFilename = decodeRfc5987Value(rawValue);
+    } else if (name === "filename" && fallbackFilename === null) {
+      fallbackFilename = rawValue;
     }
   }
-  const quoted = /(?:^|;)\s*filename\s*=\s*"((?:\\.|[^"\\])*)"/i.exec(header);
-  if (quoted?.[1] !== undefined) {
-    const unescaped = quoted[1].replaceAll(/\\(.)/g, "$1");
-    return unescaped.length > 0 ? unescaped : null;
-  }
-  const token = /(?:^|;)\s*filename\s*=\s*([^;\s]+)/i.exec(header);
-  if (token?.[1]) return token[1];
-  return null;
+
+  return extendedFilename ?? fallbackFilename;
 }

@@ -370,12 +370,10 @@ func coordinatedTask(
 	return task, err
 }
 
-// checkRunningCap counts and changes running Tasks under one per-Agent lock
-// so concurrent creates and wakes respect MaxRunningTasks.
+// checkRunningCap enforces MaxRunningTasks for an Agent. Callers must already
+// hold the per-Agent "task-delegation|<agentActorID>" advisory transaction lock
+// acquired before row locks.
 func checkRunningCap(ctx context.Context, queries *store.Queries, authorization agentauth.Authorization) error {
-	if err := queries.AcquireAdvisoryTransactionLock(ctx, "task-delegation|"+authorization.AgentActorID); err != nil {
-		return err
-	}
 	running, err := queries.CountRunningDelegatedTasksForAgent(ctx, store.CountRunningDelegatedTasksForAgentParams{
 		TenantID: authorization.TenantID, AgentActorID: authorization.AgentActorID,
 	})
