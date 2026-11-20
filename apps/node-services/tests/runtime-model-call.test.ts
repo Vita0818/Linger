@@ -1114,3 +1114,237 @@ describe("Runner Gateway model invocation adapter", () => {
       ).toBe(true);
   });
 });
+
+describe("Centralized reasoning effort clamping, context overflow mapping, and background isolation", () => {
+  it("clamps unsupported medium effort against the default model's allowedReasoningEffort across callers", async () => {
+    const modelsByRuntime: Record<string, RuntimeModelInfo[]> = {
+      pi: [
+        {
+          id: "localmodels/Spark-X2.6-4B-Q8_0",
+          isDefault: true,
+          allowedReasoningEffort: ["none", "low", "high"],
+          defaultReasoningEffort: "high",
+        },
+      ],
+      codex: [
+        {
+          id: "custom-low-default",
+          isDefault: true,
+          allowedReasoningEffort: ["low", "high"],
+          defaultReasoningEffort: "low",
+        },
+      ],
+      claude: [
+        {
+          id: "none-only",
+          isDefault: true,
+          allowedReasoningEffort: ["none"],
+        },
+      ],
+    };
+    const runtimeModels = (_computerId: string, runtimeType: string) =>
+      modelsByRuntime[runtimeType] ?? [];
+
+    const piPlacement: ModelPlacement = { ...alice, runtimeType: "pi" };
+    const piCase = setup({ placements: [piPlacement], runtimeModels });
+    await piCase.modelCall.text({
+      kind: "wiki",
+      key: "wiki:1",
+      placement: piPlacement,
+      effort: "medium",
+      input: "route",
+    });
+    expect(piCase.invokeModel.mock.calls[0]![1].reasoningEffort).toBe("high");
+
+    const codexCase = setup({ placements: [alice], runtimeModels });
+    await codexCase.modelCall.text({
+      kind: "memory",
+      key: "memory:1",
+      placement: alice,
+      effort: "medium",
+      input: "summarize",
+    });
+    expect(codexCase.invokeModel.mock.calls[0]![1].reasoningEffort).toBe("low");
+
+    const claudeCase = setup({ placements: [bob], runtimeModels });
+    await claudeCase.modelCall.text({
+      kind: "agent_memory",
+      key: "agent-memory:1",
+      placement: bob,
+      effort: "medium",
+      input: "extract",
+    });
+    expect(claudeCase.invokeModel.mock.calls[0]![1].reasoningEffort).toBe(
+      "low",
+    );
+
+    // Models that support medium keep medium unchanged.
+    const fullCase = setup({
+      placements: [alice],
+      runtimeModels: () => [
+        {
+          id: "full-model",
+          isDefault: true,
+          allowedReasoningEffort: ["low", "medium", "high"],
+        },
+      ],
+    });
+    await fullCase.modelCall.text({
+      kind: "wiki",
+      key: "wiki:full",
+      placement: alice,
+      effort: "medium",
+      input: "route",
+    });
+    expect(fullCase.invokeModel.mock.calls[0]![1].reasoningEffort).toBe(
+      "medium",
+    );
+  });
+
+  it("maps context_too_long failed outcomes to invalid_request without wasting retries", async () => {
+    const { modelCall, invokeModel } = setup({
+      placements: [alice],
+      outcomes: [
+        {
+          outcome: "failed",
+          reason:
+            "context_too_long: Model invocation prompt exceeds the model context window",
+          duration_ms: 12,
+        },
+      ],
+    });
+    await expect(
+      modelCall.text({
+        kind: "agent_memory",
+        key: "agent-memory:overflow",
+        placement: alice,
+        input: "huge prompt",
+      }),
+    ).rejects.toMatchObject({ kind: "invalid_request" });
+    expect(invokeModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("backs off repeated background runtime_unavailable failures without starving interactive calls", async () => {
+    const { modelCall, invokeModel } = setup({
+      placements: [alice],
+      outcomes: [
+        {
+          outcome: "runtime_unavailable",
+          reason: "local server down",
+          duration_ms: 5,
+        },
+        {
+          outcome: "runtime_unavailable",
+          reason: "local server down",
+          duration_ms: 5,
+        },
+        {
+          outcome: "completed",
+          text: "approved",
+          model: "fixture",
+          duration_ms: 5,
+        },
+        {
+          outcome: "completed",
+          text: "extracted",
+          model: "fixture",
+          duration_ms: 5,
+        },
+      ],
+    });
+
+    // Two background runtime_unavailable failures open the background breaker.
+    await expect(
+      modelCall.text({
+        kind: "agent_memory",
+        key: "bg:1",
+        placement: alice,
+        input: "a",
+      }),
+    ).rejects.toMatchObject({ kind: "runtime_unavailable" });
+    await expect(
+      modelCall.text({
+        kind: "wiki",
+        key: "bg:2",
+        placement: alice,
+        input: "b",
+      }),
+    ).rejects.toMatchObject({ kind: "runtime_unavailable" });
+    expect(invokeModel).toHaveBeenCalledTimes(2);
+
+    // Follow-up background call is backed off immediately without invoking the Daemon.
+    await expect(
+      modelCall.text({
+        kind: "agent_memory",
+        key: "bg:3",
+        placement: alice,
+        input: "c",
+      }),
+    ).rejects.toMatchObject({ kind: "runtime_unavailable" });
+    expect(invokeModel).toHaveBeenCalledTimes(2);
+
+    // Interactive calls bypass the background breaker and run immediately.
+    const approval = await modelCall.text({
+      kind: "approval",
+      key: "approval:1",
+      placement: alice,
+      input: "check",
+    });
+    expect(approval.output).toBe("approved");
+    expect(invokeModel).toHaveBeenCalledTimes(3);
+
+    // A successful interactive call resets the background breaker immediately.
+    const bgAfterRecovery = await modelCall.text({
+      kind: "agent_memory",
+      key: "bg:4",
+      placement: alice,
+      input: "d",
+    });
+    expect(bgAfterRecovery.output).toBe("extracted");
+    expect(invokeModel).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not trip background breaker on Pi workspace mode refusal", async () => {
+    const piPlacement: ModelPlacement = { ...alice, runtimeType: "pi" };
+    const { modelCall, invokeModel } = setup({
+      placements: [piPlacement],
+      outcomes: [
+        {
+          outcome: "runtime_unavailable",
+          reason: "Pi background calls do not run file tools",
+          duration_ms: 1,
+        },
+        {
+          outcome: "runtime_unavailable",
+          reason: "Pi background calls do not run file tools",
+          duration_ms: 1,
+        },
+        {
+          outcome: "completed",
+          text: "ok",
+          model: "localmodels/spark",
+          duration_ms: 5,
+        },
+      ],
+    });
+    for (let i = 1; i <= 2; i += 1) {
+      await expect(
+        modelCall.workspace({
+          kind: "wiki",
+          key: `ws:${i}`,
+          placement: piPlacement,
+          input: "edit",
+          files: [],
+        }),
+      ).rejects.toMatchObject({ kind: "runtime_unavailable" });
+    }
+    const textReply = await modelCall.text({
+      kind: "agent_memory",
+      key: "text:1",
+      placement: piPlacement,
+      input: "extract",
+    });
+    expect(textReply.output).toBe("ok");
+    expect(invokeModel).toHaveBeenCalledTimes(3);
+  });
+});

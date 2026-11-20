@@ -288,6 +288,10 @@ export interface RuntimeModelInfo {
   readonly contextWindow?: number;
   /** The model the Runtime runs when none is selected. */
   readonly isDefault?: boolean;
+  /** Reasoning efforts accepted by this model; empty or omitted means unconstrained. */
+  readonly allowedReasoningEffort?: readonly string[];
+  /** Default reasoning effort declared for this model. */
+  readonly defaultReasoningEffort?: string;
 }
 
 /** The model invocation of the agent role, with its failures already mapped
@@ -389,6 +393,111 @@ const silentLogger: Pick<JsonLogger, "log"> = { log: () => undefined };
 const RESULT_TTL_MS = 60 * 60_000;
 /** Pause before another attempt after a timeout or a failed attempt. */
 const RETRY_DELAY_MS = 5_000;
+/** Background availability circuit breaker bounds per (computerId, runtimeType).
+ * Interactive calls bypass this gate so background failures never starve them. */
+const BACKGROUND_BREAKER_THRESHOLD = 2;
+const BACKGROUND_BREAKER_BASE_MS = 30_000;
+const BACKGROUND_BREAKER_MAX_MS = 30 * 60_000;
+
+const CANONICAL_EFFORT_ORDER = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const;
+
+function canonicalEffort(value: string | undefined): string {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  return normalized === "off" ? "none" : normalized;
+}
+
+function isWireModelCallEffort(value: string): value is ModelCallEffort {
+  return value === "low" || value === "medium" || value === "high";
+}
+
+function normalizeModelCallEffort(
+  requested: ModelCallEffort,
+  model?: RuntimeModelInfo,
+): ModelCallEffort {
+  const allowed = model?.allowedReasoningEffort;
+  if (!allowed?.length) return requested;
+  const canonicalAllowed = allowed
+    .map((entry) => canonicalEffort(entry))
+    .filter((entry) => entry.length > 0);
+  if (!canonicalAllowed.length) return requested;
+  const supportedWire = [
+    ...new Set(canonicalAllowed.filter(isWireModelCallEffort)),
+  ];
+  if (supportedWire.includes(requested)) return requested;
+  const defaultCanonical = canonicalEffort(model?.defaultReasoningEffort);
+  if (supportedWire.length > 0) {
+    const reqIdx = CANONICAL_EFFORT_ORDER.indexOf(requested);
+    let best: ModelCallEffort | undefined;
+    let bestDist = Infinity;
+    let bestIdx = -1;
+    let bestIsDefault = false;
+    for (const candidate of supportedWire) {
+      const idx = CANONICAL_EFFORT_ORDER.indexOf(candidate);
+      const dist = Math.abs(reqIdx - idx);
+      const isDefault = defaultCanonical === candidate;
+      if (
+        dist < bestDist ||
+        (dist === bestDist && isDefault && !bestIsDefault) ||
+        (dist === bestDist && isDefault === bestIsDefault && idx > bestIdx)
+      ) {
+        best = candidate;
+        bestDist = dist;
+        bestIdx = idx;
+        bestIsDefault = isDefault;
+      }
+    }
+    return best ?? supportedWire[0]!;
+  }
+  // When no wire-valid effort overlaps (for example a ["none"]-only or
+  // ["xhigh"]-only model), send the closest wire-valid effort so the Daemon
+  // clamps it cleanly to the model's exact level.
+  const targetIdx = canonicalAllowed.reduce((sum, entry) => {
+    const idx = CANONICAL_EFFORT_ORDER.indexOf(
+      entry as (typeof CANONICAL_EFFORT_ORDER)[number],
+    );
+    return sum + (idx >= 0 ? idx : 0);
+  }, 0);
+  const averageIdx = targetIdx / canonicalAllowed.length;
+  return averageIdx >= CANONICAL_EFFORT_ORDER.indexOf("high") ? "high" : "low";
+}
+
+function defaultRuntimeModel(
+  models: readonly RuntimeModelInfo[] | undefined,
+): RuntimeModelInfo | undefined {
+  if (!models?.length) return undefined;
+  return (
+    models.find(({ isDefault }) => isDefault) ??
+    (models.length === 1 ? models[0] : undefined)
+  );
+}
+
+function runtimeModelsFingerprint(
+  models: readonly RuntimeModelInfo[] | undefined,
+): string {
+  if (!models?.length) return "";
+  return models
+    .map(
+      (model) =>
+        `${model.id}:${model.isDefault ? 1 : 0}:${model.contextWindow ?? ""}:${(model.allowedReasoningEffort ?? []).join(",")}:${model.defaultReasoningEffort ?? ""}`,
+    )
+    .join("\n");
+}
+
+interface BackgroundBreakerEntry {
+  failures: number;
+  openUntil: number;
+  modelsFingerprint: string;
+  probeInFlight: boolean;
+}
 
 /** Failures another attempt of the same call may not have. */
 const retryableKinds: ReadonlySet<ModelCallErrorKind> = new Set([
@@ -579,6 +688,7 @@ interface ModelCallState {
   >;
   readonly entries: Map<string, Entry>;
   readonly chains: Set<AbortController>;
+  readonly backgroundBreakers: Map<string, BackgroundBreakerEntry>;
   readonly stopped: AbortController;
 }
 
@@ -594,6 +704,7 @@ export function createRuntimeModelCall(
     placementCache: new Map(),
     entries: new Map(),
     chains: new Set(),
+    backgroundBreakers: new Map(),
     stopped: new AbortController(),
   };
   return {
@@ -733,12 +844,71 @@ function resolveTarget(
       ? fallback
       : preferred;
   const models = gateway.runtimeModels(placement.computerId, runtimeType);
-  const model = models?.find(({ isDefault }) => isDefault);
+  const model = defaultRuntimeModel(models);
   return {
     runtimeType,
     offline: models === undefined,
     ...(model ? { model } : {}),
   };
+}
+
+function backgroundBreakerKey(
+  computerId: string,
+  runtimeType: ModelInvoke["runtime_type"],
+): string {
+  return `${computerId}\n${runtimeType}`;
+}
+
+function admitBackgroundCall(
+  state: ModelCallState,
+  key: string,
+  modelsFingerprint: string,
+): { readonly admitted: boolean; readonly claimedProbe: boolean } {
+  const entry = state.backgroundBreakers.get(key);
+  if (!entry) return { admitted: true, claimedProbe: false };
+  if (entry.modelsFingerprint !== modelsFingerprint) {
+    state.backgroundBreakers.delete(key);
+    return { admitted: true, claimedProbe: false };
+  }
+  if (entry.failures < BACKGROUND_BREAKER_THRESHOLD)
+    return { admitted: true, claimedProbe: false };
+  if (state.now() < entry.openUntil || entry.probeInFlight)
+    return { admitted: false, claimedProbe: false };
+  entry.probeInFlight = true;
+  return { admitted: true, claimedProbe: true };
+}
+
+function recordBackgroundBreakerFailure(
+  state: ModelCallState,
+  key: string,
+  modelsFingerprint: string,
+): void {
+  const existing = state.backgroundBreakers.get(key);
+  const entry =
+    existing && existing.modelsFingerprint === modelsFingerprint
+      ? existing
+      : {
+          failures: 0,
+          openUntil: 0,
+          modelsFingerprint,
+          probeInFlight: false,
+        };
+  entry.probeInFlight = false;
+  entry.failures += 1;
+  if (entry.failures >= BACKGROUND_BREAKER_THRESHOLD) {
+    const shift = Math.min(entry.failures - BACKGROUND_BREAKER_THRESHOLD, 10);
+    const delay = Math.min(
+      BACKGROUND_BREAKER_BASE_MS * 2 ** shift,
+      BACKGROUND_BREAKER_MAX_MS,
+    );
+    entry.openUntil = state.now() + delay;
+  }
+  state.backgroundBreakers.set(key, entry);
+}
+
+function releaseBackgroundProbe(state: ModelCallState, key: string): void {
+  const entry = state.backgroundBreakers.get(key);
+  if (entry) entry.probeInFlight = false;
 }
 
 /** The session an attempt runs in. A retry gets a fresh one: the session's
@@ -764,10 +934,35 @@ async function invokeAttempt(
   const { call } = entry;
   const signal = entry.controller.signal;
   const { placement, key } = await resolvePlacement(state, call.target, signal);
-  const runtimeType =
-    entry.chain?.runtimeType ??
-    resolveTarget(state.options.gateway, placement).runtimeType;
+  const resolved = resolveTarget(state.options.gateway, placement);
+  const runtimeType = entry.chain?.runtimeType ?? resolved.runtimeType;
+  const runtimeModels = state.options.gateway.runtimeModels(
+    placement.computerId,
+    runtimeType,
+  );
+  const targetModel =
+    runtimeType === resolved.runtimeType
+      ? resolved.model
+      : defaultRuntimeModel(runtimeModels);
+  const reasoningEffort = normalizeModelCallEffort(
+    call.effort ?? "low",
+    targetModel,
+  );
   const policy = modelCallPolicies[call.kind];
+  const breakerKey = backgroundBreakerKey(placement.computerId, runtimeType);
+  const modelsFingerprint = runtimeModelsFingerprint(runtimeModels);
+  let claimedProbe = false;
+  if (!policy.interactive) {
+    const admission = admitBackgroundCall(state, breakerKey, modelsFingerprint);
+    if (!admission.admitted) {
+      throw new ModelCallError(
+        "runtime_unavailable",
+        "Background model invocation is backing off after repeated Runtime unavailability",
+        { runtimeOutcome: "runtime_unavailable" },
+      );
+    }
+    claimedProbe = admission.claimedProbe;
+  }
   const startedAt = state.now();
   const callLog = state.options.callLog;
   callLog?.started({
@@ -796,7 +991,7 @@ async function invokeAttempt(
       agentId: placement.agentId,
       runtimeType,
       mode: call.mode,
-      reasoningEffort: call.effort ?? "low",
+      reasoningEffort,
       ...(call.instructions ? { instructions: call.instructions } : {}),
       input,
       ...(call.outputSchema
@@ -823,6 +1018,14 @@ async function invokeAttempt(
     });
   } catch (error) {
     yielded = error instanceof ModelCallError && error.kind === "yielded";
+    if (
+      error instanceof ModelCallError &&
+      error.kind === "runtime_unavailable" &&
+      !(call.mode === "workspace" && runtimeType === "pi")
+    ) {
+      claimedProbe = false;
+      recordBackgroundBreakerFailure(state, breakerKey, modelsFingerprint);
+    }
     callLog?.finished({
       kind: call.kind,
       key: call.key,
@@ -842,6 +1045,8 @@ async function invokeAttempt(
       cause: error,
     });
   } finally {
+    if (claimedProbe && outcome === undefined)
+      releaseBackgroundProbe(state, breakerKey);
     stopBudget?.();
     lease?.release({
       outcome:
@@ -851,6 +1056,16 @@ async function invokeAttempt(
     });
   }
   const failure = outcomeFailure(outcome);
+  if (outcome.outcome === "completed") {
+    state.backgroundBreakers.delete(breakerKey);
+  } else if (
+    failure?.kind === "runtime_unavailable" &&
+    !(call.mode === "workspace" && runtimeType === "pi")
+  ) {
+    recordBackgroundBreakerFailure(state, breakerKey, modelsFingerprint);
+  } else if (claimedProbe) {
+    releaseBackgroundProbe(state, breakerKey);
+  }
   callLog?.finished({
     kind: call.kind,
     key: call.key,
@@ -1260,6 +1475,14 @@ function outcomeFailure(
       );
     case "canceled":
     case "failed":
+      if (
+        outcome.outcome === "failed" &&
+        outcome.reason?.startsWith("context_too_long:")
+      )
+        return new ModelCallError(
+          "invalid_request",
+          `Model invocation failed${reason}`,
+        );
       return new ModelCallError(
         "failed",
         `Model invocation ${outcome.outcome}${reason}`,

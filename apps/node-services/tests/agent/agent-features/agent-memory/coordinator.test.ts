@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   AgentMemoryCoordinator,
+  memoryBudget,
   type AgentMemoryHost,
 } from "../../../../src/agent/agent-features/agent-memory/coordinator.js";
 import type {
@@ -583,11 +584,11 @@ describe("Agent memory lifecycle", () => {
       category: "message",
       nativeRecord: { role: "user", text },
     });
-    // Eighty clipped-size records exceed one extraction batch.
-    const records = Array.from({ length: 80 }, (_, ordinal) =>
+    // Twenty clipped-size records exceed one default extraction batch.
+    const records = Array.from({ length: 20 }, (_, ordinal) =>
       record(
         ordinal,
-        `${ordinal === 0 ? "first" : ordinal === 79 ? "second" : "filler"} ${"x".repeat(3_500)}`,
+        `${ordinal === 0 ? "first" : ordinal === 19 ? "second" : "filler"} ${"x".repeat(3_500)}`,
       ),
     );
     vi.mocked(f.host.inspectDebugContextHistory).mockImplementation(
@@ -605,7 +606,7 @@ describe("Agent memory lifecycle", () => {
     );
     f.respond.mockImplementation(async (request) => {
       // A Run finishes while the pass is extracting.
-      if (records.length === 80) records.push(record(80, "third lantern-999"));
+      if (records.length === 20) records.push(record(20, "third lantern-999"));
       return validOutput(request);
     });
     try {
@@ -617,7 +618,7 @@ describe("Agent memory lifecycle", () => {
       expect(inputs[1]).toContain("second");
       expect(inputs.join("")).not.toContain("lantern-999");
       expect(Object.values(f.documents.get("A")!.cursors)).toEqual([
-        { thread_id: "thread", through: 79 },
+        { thread_id: "thread", through: 19 },
       ]);
       for (let run = 0; run < 5; run += 1) await f.coordinator.recordRun("A");
       expect(f.respond.mock.calls.at(-1)![0].input).toContain("lantern-999");
@@ -915,9 +916,9 @@ describe("Agent memory lifecycle", () => {
 });
 
 describe("Agent memory sized to the model's context window", () => {
-  // Half of 20,000 tokens at three bytes per token.
+  // Half of 20,000 tokens at 1.5 UTF-8 bytes per token (CJK/JSON safe).
   const WINDOW = 20_000;
-  const INPUT_BYTES = 30_000;
+  const INPUT_BYTES = 15_000;
   const inputBytes = (request: ModelCallRequest) =>
     Buffer.byteLength(request.instructions ?? "", "utf8") +
     Buffer.byteLength(request.input, "utf8");
@@ -977,7 +978,7 @@ describe("Agent memory sized to the model's context window", () => {
       contextWindow: () => WINDOW,
       canReadHistory: () => false,
     });
-    const candidate = (marker: string) => `${marker} ${"x".repeat(10_000)}`;
+    const candidate = (marker: string) => `${marker} ${"x".repeat(5_000)}`;
     f.documents.set("A", {
       revision: 10,
       summary: "",
@@ -1040,15 +1041,13 @@ describe("Agent memory sized to the model's context window", () => {
       .mockImplementationOnce(async (request) => validOutput(request))
       .mockResolvedValueOnce({
         summary: "Orchard release",
-        edits: [
-          { op: "add", heading: "Releases", content: "z".repeat(16_000) },
-        ],
+        edits: [{ op: "add", heading: "Releases", content: "z".repeat(8_000) }],
       });
     try {
       await f.coordinator.wake("A");
       expect(f.stages()).toEqual(["extract", "consolidate", "consolidate"]);
       expect(f.respond.mock.calls[1]![0].instructions).toContain(
-        "at most 15000 UTF-8 bytes",
+        "at most 7500 UTF-8 bytes",
       );
       expect(f.documents.get("A")!.memory).toBe(
         "## Releases\n\nRelease code: lantern-482\n",
@@ -1058,20 +1057,672 @@ describe("Agent memory sized to the model's context window", () => {
     }
   });
 
-  it.each([undefined, 1_000_000])(
-    "keeps the fixed 200 KB Memory limit when the window is %s",
-    async (window) => {
-      const f = fixture({ contextWindow: () => window });
+  it("uses a conservative 65,536-token fallback when the window is unknown and keeps the 200 KB cap for large windows", async () => {
+    expect(memoryBudget(undefined)).toEqual({ input: 49_152, memory: 24_576 });
+    expect(memoryBudget(65_536)).toEqual({ input: 49_152, memory: 24_576 });
+    expect(memoryBudget(1_000_000)).toEqual({
+      input: 400_000,
+      memory: 200_000,
+    });
+    const unknownWindow = fixture({ contextWindow: () => undefined });
+    const largeWindow = fixture({ contextWindow: () => 1_000_000 });
+    try {
+      await unknownWindow.coordinator.wake("A");
+      expect(
+        unknownWindow.respond.mock.calls.at(-1)![0].instructions,
+      ).toContain("at most 24576 UTF-8 bytes");
+      await largeWindow.coordinator.wake("A");
+      expect(largeWindow.respond.mock.calls.at(-1)![0].instructions).toContain(
+        "at most 200000 UTF-8 bytes",
+      );
+    } finally {
+      await unknownWindow.coordinator.close();
+      await largeWindow.coordinator.close();
+    }
+  });
+
+  it("keeps dense CJK and JSON transcripts strictly under 65,536 tokens when contextWindow is unknown or 65,536", async () => {
+    // Three-byte UTF-8 ideographs encoded via escapes to keep source English-only.
+    const cjkChunk = "\u4e2d\u6587\u8bb0\u5fc6\u6d4b\u8bd5".repeat(400);
+    const records = Array.from({ length: 40 }, (_, ordinal) => ({
+      ordinal,
+      category: "message",
+      nativeRecord: {
+        role: ordinal % 2 === 0 ? "user" : "assistant",
+        text: `turn-${ordinal} ${cjkChunk}`,
+        metadata: { step: ordinal, tags: ["json", "payload", "local"] },
+      },
+    }));
+    for (const windowValue of [undefined, 65_536]) {
+      const f = fixture({ contextWindow: () => windowValue });
+      vi.mocked(f.host.inspectDebugContextHistory).mockResolvedValue({
+        status: "available",
+        snapshot: {
+          id: "snapshot-cjk",
+          threadId: "thread-cjk",
+          tailState: "clean",
+          recordCount: records.length,
+        },
+        records,
+      } as never);
       try {
         await f.coordinator.wake("A");
-        expect(f.respond.mock.calls.at(-1)![0].instructions).toContain(
-          "at most 200000 UTF-8 bytes",
-        );
+        const extractions = f.respond.mock.calls
+          .map(([request]) => request)
+          .filter((request) => stageOf(request) === "extract");
+        expect(extractions.length).toBeGreaterThan(1);
+        for (const request of extractions) {
+          const totalBytes = inputBytes(request);
+          // Even at a pessimistic 1.5 UTF-8 bytes/token for CJK+JSON, every
+          // batch stays around 32K tokens, well below a 65,536-token n_ctx.
+          expect(totalBytes).toBeLessThanOrEqual(49_152);
+          const worstCaseTokens = Math.ceil(totalBytes / 1.5);
+          expect(worstCaseTokens).toBeLessThan(40_000);
+          expect(totalBytes).toBeLessThan(65_536);
+        }
+        expect(Object.values(f.documents.get("A")!.cursors)).toEqual([
+          { thread_id: "thread-cjk", through: 39 },
+        ]);
       } finally {
         await f.coordinator.close();
       }
-    },
-  );
+    }
+  });
+
+  it("adaptively shrinks extraction batches on invalid_request context overflow instead of looping", async () => {
+    const f = fixture({ contextWindow: () => undefined });
+    const records = Array.from({ length: 12 }, (_, ordinal) => ({
+      ordinal,
+      category: "message",
+      nativeRecord: {
+        role: "user",
+        text: `item-${ordinal} ${"a".repeat(2_500)}`,
+      },
+    }));
+    vi.mocked(f.host.inspectDebugContextHistory).mockResolvedValue({
+      status: "available",
+      snapshot: {
+        id: "snapshot-shrink",
+        threadId: "thread-shrink",
+        tailState: "clean",
+        recordCount: records.length,
+      },
+      records,
+    } as never);
+    // Simulate a smaller local n_ctx that rejects prompts above 12 KB.
+    f.respond.mockImplementation(async (request) => {
+      if (
+        stageOf(request) === "extract" &&
+        Buffer.byteLength(request.input, "utf8") > 12_000
+      ) {
+        throw new ModelCallError(
+          "invalid_request",
+          "request exceeds available context size",
+        );
+      }
+      return validOutput(request);
+    });
+    try {
+      await f.coordinator.wake("A");
+      expect(Object.values(f.documents.get("A")!.cursors)).toEqual([
+        { thread_id: "thread-shrink", through: 11 },
+      ]);
+      expect(f.documents.get("A")!.pending).toBeUndefined();
+      expect(f.logger.log).toHaveBeenCalledWith(
+        "warn",
+        "agent_memory.batch_shrunk",
+        expect.objectContaining({
+          agentId: "A",
+          stage: "extract",
+          before_bytes: expect.any(Number),
+          after_bytes: expect.any(Number),
+        }),
+      );
+    } finally {
+      await f.coordinator.close();
+    }
+  });
+
+  it("does not drop healthy sibling records when invalid_request hits max shrink steps or an unshrinkable first record", async () => {
+    const f = fixture({ contextWindow: () => 200_000 });
+    // Build a persisted multi-record batch: record 0 is unclippable, records 1..2 are healthy.
+    const sourceKey = "b".repeat(64);
+    const hugeNumbers = Array.from({ length: 4_000 }, (_, i) => i);
+    const pendingPrompt = JSON.stringify({
+      source_context: "source",
+      previous: null,
+      records: [
+        {
+          ordinal: 0,
+          category: "tool_result",
+          nativeRecord: { numbers: hugeNumbers },
+        },
+        {
+          ordinal: 1,
+          category: "message",
+          nativeRecord: { role: "user", text: "Keep sibling-one lantern-777." },
+        },
+        {
+          ordinal: 2,
+          category: "message",
+          nativeRecord: { role: "user", text: "Keep sibling-two lantern-888." },
+        },
+      ],
+    });
+    f.documents.set("A", {
+      revision: 1,
+      summary: "",
+      memory: "",
+      sessions: {},
+      cursors: {},
+      pending: {
+        stage: "extract",
+        prompt: pendingPrompt,
+        source_key: sourceKey,
+        thread_id: "thread-siblings",
+        through: 2,
+      },
+    });
+    // Reject any prompt still containing record 0's huge numbers array.
+    f.respond.mockImplementation(async (request) => {
+      if (
+        stageOf(request) === "extract" &&
+        request.input.includes('"numbers":[0,1,2')
+      ) {
+        throw new ModelCallError(
+          "invalid_request",
+          "context_too_long: prompt exceeds window",
+        );
+      }
+      return validOutput(request);
+    });
+    try {
+      await f.coordinator.reconcile();
+      const extractInputs = f.respond.mock.calls
+        .map(([r]) => r)
+        .filter((r) => stageOf(r) === "extract")
+        .map((r) => r.input);
+      // Record 0 was skipped individually while healthy sibling records 1..2
+      // were preserved and extracted rather than silently dropped.
+      expect(f.logger.log).toHaveBeenCalledWith(
+        "warn",
+        "agent_memory.record_skipped_oversized",
+        expect.objectContaining({
+          agentId: "A",
+          source_key: sourceKey,
+          ordinal: 0,
+        }),
+      );
+      expect(extractInputs.at(-1)).toContain("sibling-one");
+      expect(extractInputs.at(-1)).toContain("sibling-two");
+      const after = f.documents.get("A")!;
+      expect(after.cursors[sourceKey]).toEqual({
+        thread_id: "thread-siblings",
+        through: 2,
+      });
+      expect(after.pending).toBeUndefined();
+    } finally {
+      await f.coordinator.close();
+    }
+  });
+
+  it("never skips a multi-record batch when MAX_SHRINK_STEPS_PER_PASS is exhausted", async () => {
+    const f = fixture({ contextWindow: () => 200_000 });
+    const sourceKey = "c".repeat(64);
+    // 64 records of ~700 bytes (~45 KB): 4 halvings in one pass leave >2 KB
+    // and multiple records, exhausting MAX_SHRINK_STEPS_PER_PASS without
+    // advancing the cursor or dropping records.
+    const records = Array.from({ length: 64 }, (_, ordinal) => ({
+      ordinal,
+      category: "message",
+      nativeRecord: { role: "user", text: `msg-${ordinal} ${"x".repeat(650)}` },
+    }));
+    f.documents.set("A", {
+      revision: 1,
+      summary: "",
+      memory: "",
+      sessions: {},
+      cursors: {},
+      pending: {
+        stage: "extract",
+        prompt: JSON.stringify({
+          source_context: "source",
+          previous: null,
+          records,
+        }),
+        source_key: sourceKey,
+        thread_id: "thread-many",
+        through: 63,
+      },
+    });
+    f.respond.mockImplementation(async (request) => {
+      if (
+        stageOf(request) === "extract" &&
+        Buffer.byteLength(request.input, "utf8") > 1_200
+      ) {
+        throw new ModelCallError("invalid_request", "context_too_long");
+      }
+      return validOutput(request);
+    });
+    try {
+      await f.coordinator.reconcile();
+      // Pass hit MAX_SHRINK_STEPS_PER_PASS (4) with >1 records remaining:
+      // must keep the shrunk pending checkpoint and NOT advance the cursor.
+      const afterFirst = f.documents.get("A")!;
+      expect(afterFirst.cursors[sourceKey]).toBeUndefined();
+      expect(afterFirst.pending).toBeDefined();
+      const kept = (
+        JSON.parse(afterFirst.pending!.prompt) as { records: unknown[] }
+      ).records;
+      expect(kept.length).toBeGreaterThan(1);
+      expect(kept.length).toBeLessThan(64);
+    } finally {
+      await f.coordinator.close();
+    }
+  });
+
+  it("does not permanently poison adaptiveInputBytes on transient failed outages and bounds indivisible failed records", async () => {
+    const f = fixture({ contextWindow: () => 65_536 });
+    const records = Array.from({ length: 12 }, (_, ordinal) => ({
+      ordinal,
+      category: "message",
+      nativeRecord: {
+        role: "user",
+        text: `transient-${ordinal} ${"x".repeat(2_000)}`,
+      },
+    }));
+    vi.mocked(f.host.inspectDebugContextHistory).mockResolvedValue({
+      status: "available",
+      snapshot: {
+        id: "snapshot-transient",
+        threadId: "thread-transient",
+        tailState: "clean",
+        recordCount: records.length,
+      },
+      records,
+    } as never);
+    // Simulate a transient 500 outage for the first 3 calls, then full recovery.
+    let failCount = 0;
+    f.respond.mockImplementation(async (request) => {
+      if (stageOf(request) === "extract" && failCount < 3) {
+        failCount += 1;
+        throw new ModelCallError("failed", "500 temporary outage");
+      }
+      return validOutput(request);
+    });
+    try {
+      await f.coordinator.wake("A");
+      f.advance(60_000);
+      await f.coordinator.wake("A");
+      f.advance(2 * 60_000);
+      await f.coordinator.wake("A");
+      f.advance(4 * 60_000);
+      await f.coordinator.wake("A");
+      const completedExtracts = f.respond.mock.calls
+        .slice(3)
+        .map(([r]) => r)
+        .filter((r) => stageOf(r) === "extract");
+      // The second post-recovery extraction batch must use the full 65K budget
+      // (not be stuck at 4 KB from transient failures).
+      expect(completedExtracts.length).toBeGreaterThanOrEqual(2);
+      const nextBatchBytes = Buffer.byteLength(
+        completedExtracts[1]!.input,
+        "utf8",
+      );
+      expect(nextBatchBytes).toBeGreaterThan(10_000);
+      expect(Object.values(f.documents.get("A")!.cursors)).toEqual([
+        { thread_id: "thread-transient", through: 11 },
+      ]);
+    } finally {
+      await f.coordinator.close();
+    }
+
+    // Indivisible / tiny record under persistent "failed" must spend attempts and stop.
+    const f2 = fixture({ contextWindow: () => 65_536 });
+    f2.respond.mockRejectedValue(
+      new ModelCallError("failed", "persistent error"),
+    );
+    try {
+      await f2.coordinator.wake("A");
+      expect(f2.documents.get("A")!.pending?.attempt).toBe(1);
+      f2.advance(60_000);
+      await f2.coordinator.wake("A");
+      expect(f2.documents.get("A")!.pending?.attempt).toBe(2);
+      f2.advance(2 * 60_000);
+      await f2.coordinator.wake("A");
+      expect(f2.documents.get("A")!.pending?.attempt).toBe(3);
+      const callsAtCap = f2.respond.mock.calls.length;
+      f2.advance(4 * 60_000);
+      await f2.coordinator.wake("A");
+      expect(f2.respond).toHaveBeenCalledTimes(callsAtCap);
+    } finally {
+      await f2.coordinator.close();
+    }
+  });
+
+  it("self-heals and shrinks oversized consolidate prompts including previous.memory while preserving memory_sections", async () => {
+    const f = fixture({
+      contextWindow: () => 65_536,
+      canReadHistory: () => false,
+    });
+    const largeMemory = Array.from(
+      { length: 20 },
+      (_, idx) => `## Topic ${idx}\n\n${"m".repeat(5_000)}\n`,
+    ).join("\n");
+    const largeSummary = "s".repeat(12_000);
+    const sessionKey = "d".repeat(64);
+    f.documents.set("A", {
+      revision: 5,
+      summary: largeSummary,
+      memory: largeMemory,
+      cursors: {},
+      sessions: {
+        [sessionKey]: waitingSession("candidate facts", 5),
+      },
+    });
+    // Also reject prompts above 20 KB to exercise invalid_request shrinking of previous.memory.
+    f.respond.mockImplementation(async (request) => {
+      if (
+        stageOf(request) === "consolidate" &&
+        Buffer.byteLength(request.input, "utf8") > 20_000
+      ) {
+        throw new ModelCallError(
+          "invalid_request",
+          "context_too_long: consolidate exceeded window",
+        );
+      }
+      // Remove all existing topics so the edited memory fits the tighter 65K memory limit.
+      const parsed = JSON.parse(request.input) as { memory_sections: string[] };
+      return {
+        summary: "Compact summary",
+        edits: [
+          ...parsed.memory_sections.map((heading) => ({
+            op: "delete",
+            heading,
+            content: "",
+          })),
+          {
+            op: "add",
+            heading: "Releases",
+            content: "Release code: lantern-482",
+          },
+        ],
+      };
+    });
+    try {
+      await f.coordinator.wake("A");
+      const calls = f.respond.mock.calls
+        .map(([r]) => r)
+        .filter((r) => stageOf(r) === "consolidate");
+      expect(calls.length).toBeGreaterThanOrEqual(2);
+      // Even the initial consolidate prompt was trimmed below the 65K budget (including schema bytes).
+      expect(inputBytes(calls[0]!)).toBeLessThanOrEqual(49_152);
+      // After invalid_request shrink, final call fit <= 20 KB while preserving all 20 memory_sections!
+      const finalPayload = JSON.parse(calls.at(-1)!.input) as {
+        previous: { summary: string; memory: string };
+        memory_sections: string[];
+      };
+      expect(
+        Buffer.byteLength(calls.at(-1)!.input, "utf8"),
+      ).toBeLessThanOrEqual(20_000);
+      expect(finalPayload.memory_sections).toHaveLength(20);
+      expect(f.documents.get("A")!.memory).toContain("lantern-482");
+      expect(f.documents.get("A")!.pending).toBeUndefined();
+    } finally {
+      await f.coordinator.close();
+    }
+  });
+
+  it("self-heals an oversized persisted consolidate checkpoint before invoking the model", async () => {
+    const f = fixture({
+      contextWindow: () => 65_536,
+      canReadHistory: () => false,
+    });
+    const hugeMemory = Array.from(
+      { length: 20 },
+      (_, idx) => `## Section ${idx}\n\n${"k".repeat(4_000)}\n`,
+    ).join("\n");
+    const sessionKey = "e".repeat(64);
+    const oversizedPrompt = JSON.stringify({
+      previous: { summary: "s".repeat(10_000), memory: hugeMemory },
+      memory_sections: Array.from({ length: 20 }, (_, idx) => `Section ${idx}`),
+      extractions: [
+        {
+          key: sessionKey,
+          context_key: "source",
+          summary: "sum",
+          raw_memory: "r".repeat(20_000),
+        },
+      ],
+    });
+    expect(Buffer.byteLength(oversizedPrompt, "utf8")).toBeGreaterThan(100_000);
+    f.documents.set("A", {
+      revision: 2,
+      summary: "",
+      memory: "",
+      cursors: {},
+      sessions: { [sessionKey]: waitingSession("r".repeat(20_000), 2) },
+      pending: { stage: "consolidate", prompt: oversizedPrompt },
+    });
+    try {
+      await f.coordinator.reconcile();
+      const firstCall = f.respond.mock.calls[0]![0];
+      expect(stageOf(firstCall)).toBe("consolidate");
+      expect(inputBytes(firstCall)).toBeLessThanOrEqual(49_152);
+      expect(f.documents.get("A")!.pending).toBeUndefined();
+      expect(f.logger.log).toHaveBeenCalledWith(
+        "info",
+        "agent_memory.batch_shrunk",
+        expect.objectContaining({
+          agentId: "A",
+          stage: "consolidate",
+          before_bytes: expect.any(Number),
+          after_bytes: expect.any(Number),
+          reason: "budget",
+        }),
+      );
+    } finally {
+      await f.coordinator.close();
+    }
+  });
+
+  it("shrinks an oversized batch on failed Pi calls across backoff and recovers", async () => {
+    const f = fixture({ contextWindow: () => undefined });
+    const records = Array.from({ length: 10 }, (_, ordinal) => ({
+      ordinal,
+      category: "message",
+      nativeRecord: {
+        role: "user",
+        text: `pi-item-${ordinal} ${"\u4e2d".repeat(1_000)}`,
+      },
+    }));
+    vi.mocked(f.host.inspectDebugContextHistory).mockResolvedValue({
+      status: "available",
+      snapshot: {
+        id: "snapshot-pi",
+        threadId: "thread-pi",
+        tailState: "clean",
+        recordCount: records.length,
+      },
+      records,
+    } as never);
+    // Pi redacts provider 400 context-overflow errors to a generic failed outcome.
+    f.respond.mockImplementation(async (request) => {
+      if (
+        stageOf(request) === "extract" &&
+        Buffer.byteLength(request.input, "utf8") > 18_000
+      ) {
+        throw new ModelCallError(
+          "failed",
+          "Model invocation failed: Pi background call did not complete",
+        );
+      }
+      return validOutput(request);
+    });
+    try {
+      await f.coordinator.wake("A");
+      expect(f.documents.get("A")!.pending?.stage).toBe("extract");
+      expect(
+        Buffer.byteLength(f.documents.get("A")!.pending!.prompt, "utf8"),
+      ).toBeLessThanOrEqual(18_000);
+      // First backoff extracts the shrunk first slice and shrinks the remainder.
+      f.advance(60_000);
+      await f.coordinator.wake("A");
+      expect(Object.values(f.documents.get("A")!.cursors)).toEqual([
+        { thread_id: "thread-pi", through: 3 },
+      ]);
+      // Next backoff finishes the remaining slices without poisoning adaptiveInputBytes.
+      f.advance(2 * 60_000);
+      await f.coordinator.wake("A");
+      expect(Object.values(f.documents.get("A")!.cursors)).toEqual([
+        { thread_id: "thread-pi", through: 9 },
+      ]);
+      expect(f.documents.get("A")!.pending).toBeUndefined();
+    } finally {
+      await f.coordinator.close();
+    }
+  });
+
+  it("skips an indivisible oversized record rather than looping forever", async () => {
+    const f = fixture({ contextWindow: () => 20_000 });
+    // Build one record whose unclippable JSON structure alone exceeds room, followed by a normal record.
+    const hugeArray = Array.from({ length: 6_000 }, (_, i) => i);
+    const records = [
+      {
+        ordinal: 0,
+        category: "tool_result",
+        nativeRecord: { numbers: hugeArray },
+      },
+      {
+        ordinal: 1,
+        category: "message",
+        nativeRecord: { role: "user", text: "Keep lantern-482 alive." },
+      },
+    ];
+    vi.mocked(f.host.inspectDebugContextHistory).mockResolvedValue({
+      status: "available",
+      snapshot: {
+        id: "snapshot-oversized",
+        threadId: "thread-oversized",
+        tailState: "clean",
+        recordCount: records.length,
+      },
+      records,
+    } as never);
+    try {
+      await f.coordinator.wake("A");
+      expect(f.logger.log).toHaveBeenCalledWith(
+        "warn",
+        "agent_memory.record_skipped_oversized",
+        expect.objectContaining({
+          agentId: "A",
+          ordinal: 0,
+          source_key: expect.any(String),
+          room_bytes: expect.any(Number),
+        }),
+      );
+      expect(f.stages()).toEqual(["extract", "consolidate"]);
+      expect(f.respond.mock.calls[0]![0].input).toContain("lantern-482");
+      expect(Object.values(f.documents.get("A")!.cursors)).toEqual([
+        { thread_id: "thread-oversized", through: 1 },
+      ]);
+    } finally {
+      await f.coordinator.close();
+    }
+  });
+
+  it("self-heals an oversized persisted pending checkpoint before invoking the model", async () => {
+    const f = fixture({ contextWindow: () => undefined });
+    const sourceKey = "a".repeat(64);
+    const legacyRecords = Array.from({ length: 30 }, (_, ordinal) => ({
+      ordinal,
+      category: "message",
+      nativeRecord: {
+        role: "user",
+        text: `legacy-${ordinal} ${"x".repeat(3_500)}`,
+      },
+    }));
+    const legacyPrompt = JSON.stringify({
+      source_context: "source",
+      previous: null,
+      records: legacyRecords,
+    });
+    expect(Buffer.byteLength(legacyPrompt, "utf8")).toBeGreaterThan(100_000);
+    f.documents.set("A", {
+      revision: 1,
+      summary: "",
+      memory: "",
+      sessions: {},
+      cursors: {},
+      pending: {
+        stage: "extract",
+        prompt: legacyPrompt,
+        source_key: sourceKey,
+        thread_id: "thread-legacy",
+        through: 29,
+      },
+    });
+    try {
+      await f.coordinator.reconcile();
+      const firstExtract = f.respond.mock.calls[0]![0];
+      expect(stageOf(firstExtract)).toBe("extract");
+      expect(inputBytes(firstExtract)).toBeLessThanOrEqual(49_152);
+      expect(f.documents.get("A")!.pending).toBeUndefined();
+    } finally {
+      await f.coordinator.close();
+    }
+  });
+
+  it("opens a circuit breaker after repeated unavailable-model failures and resets after a succeeded Run", async () => {
+    const f = fixture();
+    f.respond.mockRejectedValue(
+      new ModelCallError(
+        "runtime_unavailable",
+        "Local Computer Runtime pi is unavailable",
+      ),
+    );
+    try {
+      // Five failures with exponential backoff (1m, 2m, 4m, 8m) trip the circuit.
+      await f.coordinator.wake("A");
+      expect(f.respond).toHaveBeenCalledTimes(1);
+      f.advance(60_000);
+      await f.coordinator.reconcile();
+      expect(f.respond).toHaveBeenCalledTimes(2);
+      f.advance(2 * 60_000);
+      await f.coordinator.reconcile();
+      expect(f.respond).toHaveBeenCalledTimes(3);
+      f.advance(4 * 60_000);
+      await f.coordinator.reconcile();
+      expect(f.respond).toHaveBeenCalledTimes(4);
+      f.advance(8 * 60_000);
+      await f.coordinator.reconcile();
+      expect(f.respond).toHaveBeenCalledTimes(5);
+      expect(f.logger.log).toHaveBeenCalledWith(
+        "warn",
+        "agent_memory.circuit_opened",
+        expect.objectContaining({
+          agentId: "A",
+          failures: 5,
+          cooldown_ms: 6 * 60 * 60_000,
+        }),
+      );
+
+      // Even after 2 hours, the open circuit suppresses reconcile and wake calls.
+      f.advance(2 * 60 * 60_000);
+      await f.coordinator.reconcile();
+      await f.coordinator.wake("A");
+      expect(f.respond).toHaveBeenCalledTimes(5);
+
+      // Once the model recovers and a real Run succeeds, recordRun reopens maintenance.
+      f.respond.mockImplementation(async (request) => validOutput(request));
+      await f.coordinator.recordRun("A");
+      await f.coordinator.reconcile();
+      expect(f.documents.get("A")!.pending).toBeUndefined();
+      expect(f.respond).toHaveBeenCalledTimes(6);
+    } finally {
+      await f.coordinator.close();
+    }
+  });
 
   it("builds no stage while the window cannot be read and backs off", async () => {
     const contextWindow = vi.fn((): number | undefined => {
