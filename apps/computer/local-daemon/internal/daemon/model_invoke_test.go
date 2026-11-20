@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/simplexai-labs/linger/apps/computer/local-daemon/internal/linger/transport"
+	"github.com/simplexai-labs/linger/apps/computer/local-daemon/internal/localmodels"
 	"github.com/simplexai-labs/linger/apps/computer/local-daemon/internal/protocol"
 	"github.com/simplexai-labs/linger/apps/computer/local-daemon/internal/provider"
 )
@@ -349,5 +350,488 @@ func TestModelInvokeCarriesTheCapAndWhatAStoppedCallStreamed(t *testing.T) {
 	payload := waitForModelInvoked(t, stream, "invoke-1")
 	if payload["outcome"] != "output_limited" || payload["text"] != `{"actions":[{"p` || payload["reason"] != "Model reply exceeded its output limit" || payload["usage"] != nil {
 		t.Fatalf("payload = %v", payload)
+	}
+}
+
+func TestModelInvokeNormalizesUnsupportedEffortForTargetModel(t *testing.T) {
+	tests := []struct {
+		name        string
+		runtimeType string
+		models      []provider.RuntimeModel
+		requested   string
+		want        string
+	}{
+		{
+			name:        "spark pi medium clamps to declared high default",
+			runtimeType: "pi",
+			models: []provider.RuntimeModel{{
+				ID:                     "localmodels/Spark-X2.6-4B-Q8_0",
+				Label:                  "Spark-X2.6-4B-Q8_0",
+				AllowedReasoningEffort: []string{"low", "high"},
+				DefaultReasoningEffort: "high",
+				IsDefault:              true,
+			}},
+			requested: "medium",
+			want:      "high",
+		},
+		{
+			name:        "spark pi medium clamps to declared low default",
+			runtimeType: "pi",
+			models: []provider.RuntimeModel{{
+				ID:                     "localmodels/Spark-X2.6-4B-Q8_0",
+				Label:                  "Spark-X2.6-4B-Q8_0",
+				AllowedReasoningEffort: []string{"low", "high"},
+				DefaultReasoningEffort: "low",
+				IsDefault:              true,
+			}},
+			requested: "medium",
+			want:      "low",
+		},
+		{
+			name:        "spark pi medium without default clamps upward to high",
+			runtimeType: "pi",
+			models: []provider.RuntimeModel{{
+				ID:                     "localmodels/Spark-X2.6-4B-Q8_0",
+				Label:                  "Spark-X2.6-4B-Q8_0",
+				AllowedReasoningEffort: []string{"low", "high"},
+				IsDefault:              true,
+			}},
+			requested: "medium",
+			want:      "high",
+		},
+		{
+			name:        "spark pi preserves allowed low",
+			runtimeType: "pi",
+			models: []provider.RuntimeModel{{
+				ID:                     "localmodels/Spark-X2.6-4B-Q8_0",
+				Label:                  "Spark-X2.6-4B-Q8_0",
+				AllowedReasoningEffort: []string{"low", "high"},
+				DefaultReasoningEffort: "high",
+				IsDefault:              true,
+			}},
+			requested: "low",
+			want:      "low",
+		},
+		{
+			name:        "non-reasoning pi model clears thinking effort",
+			runtimeType: "pi",
+			models: []provider.RuntimeModel{{
+				ID:                     "localmodels/plain-model",
+				Label:                  "Plain Model",
+				AllowedReasoningEffort: []string{},
+				IsDefault:              true,
+			}},
+			requested: "medium",
+			want:      "",
+		},
+		{
+			name:        "codex model clamps medium when only low and high are allowed",
+			runtimeType: "codex",
+			models: []provider.RuntimeModel{{
+				ID:                     "custom-model",
+				Label:                  "Custom Model",
+				AllowedReasoningEffort: []string{"low", "high"},
+				DefaultReasoningEffort: "high",
+				IsDefault:              true,
+			}},
+			requested: "medium",
+			want:      "high",
+		},
+		{
+			name:        "claude none-only model normalizes to none",
+			runtimeType: "claude",
+			models: []provider.RuntimeModel{{
+				ID:                     "claude-none",
+				Label:                  "Claude None",
+				AllowedReasoningEffort: []string{"none"},
+				IsDefault:              true,
+			}},
+			requested: "medium",
+			want:      "none",
+		},
+		{
+			name:        "pi filters unsupported ultra effort from allowed list",
+			runtimeType: "pi",
+			models: []provider.RuntimeModel{{
+				ID:                     "localmodels/Spark-X2.6-4B-Q8_0",
+				Label:                  "Spark-X2.6-4B-Q8_0",
+				AllowedReasoningEffort: []string{"low", "ultra"},
+				IsDefault:              true,
+			}},
+			requested: "high",
+			want:      "low",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			invoker := newFakeModelInvoker()
+			stream := &fakeStream{}
+			diagnostics := mustJSON([]provider.RuntimeDiagnostic{{
+				Type:   tc.runtimeType,
+				Status: "ready",
+				Models: tc.models,
+			}})
+			d, err := newTestDaemon(t, Options{
+				ComputerID:         "computer-1",
+				ControlPlane:       fakeControlPlane{stream: stream},
+				IdentityStore:      fakeStore{},
+				OperationResolver:  prepareOperationResolver{workingDirectory: t.TempDir()},
+				ModelInvoker:       invoker,
+				Runtimes:           []string{tc.runtimeType},
+				RuntimeDiagnostics: diagnostics,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(d.WaitForOperations)
+
+			command := modelInvokeCommand("invoke-effort", map[string]any{"reasoning_effort": tc.requested})
+			command.RuntimeType = tc.runtimeType
+			if err := d.handleModelInvoke(context.Background(), stream, command); err != nil {
+				t.Fatal(err)
+			}
+			request := <-invoker.started
+			if request.ReasoningEffort != tc.want {
+				t.Fatalf("normalized ReasoningEffort = %q; want %q", request.ReasoningEffort, tc.want)
+			}
+			close(invoker.release)
+			if payload := waitForModelInvoked(t, stream, "invoke-effort"); payload["outcome"] != "completed" {
+				t.Fatalf("payload = %v", payload)
+			}
+		})
+	}
+}
+
+type scriptedModelInvoker struct {
+	mu      sync.Mutex
+	calls   int
+	result  provider.ModelInvokeResult
+	started chan string
+	release chan struct{}
+}
+
+func (s *scriptedModelInvoker) Close() {}
+
+func (s *scriptedModelInvoker) Invoke(ctx context.Context, _ provider.ModelInvokeRequest) provider.ModelInvokeResult {
+	s.mu.Lock()
+	s.calls++
+	callNum := s.calls
+	started := s.started
+	release := s.release
+	s.mu.Unlock()
+	if started != nil {
+		started <- fmt.Sprintf("call-%d", callNum)
+	}
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return provider.ModelInvokeResult{Outcome: provider.ModelInvokeCanceled, Reason: "Model invocation was canceled"}
+		}
+	}
+	s.mu.Lock()
+	result := s.result
+	s.mu.Unlock()
+	if result.Outcome == provider.ModelInvokeCompleted && result.Text == "" {
+		result.Text = `{"answer":"ok"}`
+		result.Model = "fixture-model"
+	}
+	return result
+}
+
+func (s *scriptedModelInvoker) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func (s *scriptedModelInvoker) setResult(result provider.ModelInvokeResult) {
+	s.mu.Lock()
+	s.result = result
+	s.mu.Unlock()
+}
+
+func TestModelInvokeBacksOffAfterRepeatedAvailabilityFailuresAndRecovers(t *testing.T) {
+	invoker := &scriptedModelInvoker{
+		result: provider.ModelInvokeResult{
+			Outcome: provider.ModelInvokeRuntimeUnavailable,
+			Reason:  "Pi background model service is unavailable",
+		},
+	}
+	d, stream := modelInvokeFixture(t, invoker)
+	clock := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	d.now = func() time.Time { return clock }
+
+	runCall := func(id string) map[string]any {
+		t.Helper()
+		cmd := modelInvokeCommand(id, nil)
+		cmd.RuntimeType = "pi"
+		if err := d.handleModelInvoke(context.Background(), stream, cmd); err != nil {
+			t.Fatal(err)
+		}
+		return waitForModelInvoked(t, stream, id)
+	}
+
+	// First three consecutive availability failures execute and open the circuit breaker.
+	for i := range modelInvokeBreakerThreshold {
+		payload := runCall(fmt.Sprintf("fail-%d", i+1))
+		if payload["outcome"] != provider.ModelInvokeRuntimeUnavailable {
+			t.Fatalf("fail-%d outcome = %v", i+1, payload["outcome"])
+		}
+	}
+	if invoker.callCount() != modelInvokeBreakerThreshold {
+		t.Fatalf("calls = %d; want %d", invoker.callCount(), modelInvokeBreakerThreshold)
+	}
+
+	// Immediate follow-up calls are rejected without spawning another process.
+	for i := range 3 {
+		payload := runCall(fmt.Sprintf("blocked-%d", i+1))
+		if payload["outcome"] != provider.ModelInvokeRuntimeUnavailable {
+			t.Fatalf("blocked-%d payload = %v; want runtime_unavailable", i+1, payload)
+		}
+	}
+	if invoker.callCount() != modelInvokeBreakerThreshold {
+		t.Fatalf("blocked calls invoked runtime: count = %d", invoker.callCount())
+	}
+
+	// After the initial 30s backoff, one half-open probe runs; failure doubles backoff to 60s.
+	clock = clock.Add(modelInvokeBreakerBase)
+	if payload := runCall("probe-fail"); payload["outcome"] != provider.ModelInvokeRuntimeUnavailable {
+		t.Fatalf("probe-fail payload = %v", payload)
+	}
+	if invoker.callCount() != modelInvokeBreakerThreshold+1 {
+		t.Fatalf("probe did not run: count = %d", invoker.callCount())
+	}
+
+	// Still blocked 45s later because backoff doubled to 60s.
+	clock = clock.Add(45 * time.Second)
+	if payload := runCall("blocked-doubled"); payload["outcome"] != provider.ModelInvokeRuntimeUnavailable {
+		t.Fatalf("blocked-doubled payload = %v", payload)
+	}
+	if invoker.callCount() != modelInvokeBreakerThreshold+1 {
+		t.Fatalf("call ran before doubled backoff expired: count = %d", invoker.callCount())
+	}
+
+	// A Runtime inventory update (for example loading a local model) resets the breaker immediately.
+	invoker.setResult(provider.ModelInvokeResult{Outcome: provider.ModelInvokeCompleted})
+	diagnostics := mustJSON([]provider.RuntimeDiagnostic{{Type: "pi", Status: "ready", Models: []provider.RuntimeModel{}}})
+	if err := d.UpdateRuntimeInventory(context.Background(), []string{"pi"}, diagnostics, nil); err != nil {
+		t.Fatal(err)
+	}
+	if payload := runCall("recovered-after-inventory"); payload["outcome"] != provider.ModelInvokeCompleted {
+		t.Fatalf("recovered payload = %v", payload)
+	}
+	if invoker.callCount() != modelInvokeBreakerThreshold+2 {
+		t.Fatalf("recovered call count = %d", invoker.callCount())
+	}
+}
+
+func TestModelInvokeNonAvailabilityOutcomesDoNotTripBreaker(t *testing.T) {
+	cases := []struct {
+		name   string
+		result provider.ModelInvokeResult
+	}{
+		{name: "canceled", result: provider.ModelInvokeResult{Outcome: provider.ModelInvokeCanceled, Reason: "transient"}},
+		{name: "output_limited", result: provider.ModelInvokeResult{Outcome: provider.ModelInvokeOutputLimited, Reason: "transient"}},
+		{name: "generic_failed", result: provider.ModelInvokeResult{Outcome: provider.ModelInvokeFailed, Reason: "Pi background call did not complete"}},
+		{name: "context_too_long", result: provider.ModelInvokeResult{Outcome: provider.ModelInvokeFailed, Reason: provider.ModelInvokeContextTooLongReason}},
+		{name: "pi_workspace_refusal", result: provider.ModelInvokeResult{Outcome: provider.ModelInvokeRuntimeUnavailable, Reason: "Pi background calls do not run file tools", NonAvailability: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			invoker := &scriptedModelInvoker{result: tc.result}
+			d, stream := modelInvokeFixture(t, invoker)
+			for i := range modelInvokeBreakerThreshold + 2 {
+				cmd := modelInvokeCommand(fmt.Sprintf("call-%d", i), nil)
+				cmd.RuntimeType = "pi"
+				if err := d.handleModelInvoke(context.Background(), stream, cmd); err != nil {
+					t.Fatal(err)
+				}
+				payload := waitForModelInvoked(t, stream, fmt.Sprintf("call-%d", i))
+				if payload["outcome"] != tc.result.Outcome {
+					t.Fatalf("call-%d outcome = %v; want %s", i, payload["outcome"], tc.result.Outcome)
+				}
+			}
+			if invoker.callCount() != modelInvokeBreakerThreshold+2 {
+				t.Fatalf("calls = %d; want %d", invoker.callCount(), modelInvokeBreakerThreshold+2)
+			}
+		})
+	}
+}
+
+func TestModelInvokeBreakerConcurrentHalfOpenProbeAndResetOnRun(t *testing.T) {
+	invoker := &scriptedModelInvoker{
+		result: provider.ModelInvokeResult{Outcome: provider.ModelInvokeFailed, Reason: "connection refused", AvailabilityFailure: true},
+	}
+	d, stream := modelInvokeFixture(t, invoker)
+	clock := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	d.now = func() time.Time { return clock }
+
+	runCall := func(id string) map[string]any {
+		t.Helper()
+		cmd := modelInvokeCommand(id, nil)
+		cmd.RuntimeType = "pi"
+		if err := d.handleModelInvoke(context.Background(), stream, cmd); err != nil {
+			t.Fatal(err)
+		}
+		return waitForModelInvoked(t, stream, id)
+	}
+
+	// Trip the breaker with 3 transport availability failures.
+	for i := range modelInvokeBreakerThreshold {
+		if payload := runCall(fmt.Sprintf("trip-%d", i+1)); payload["outcome"] != provider.ModelInvokeFailed {
+			t.Fatalf("trip-%d = %v", i+1, payload)
+		}
+	}
+
+	// Expire backoff and fire two concurrent calls: only one half-open probe may run.
+	clock = clock.Add(modelInvokeBreakerBase)
+	invoker.mu.Lock()
+	invoker.started = make(chan string, 4)
+	invoker.release = make(chan struct{})
+	invoker.mu.Unlock()
+
+	cmd1 := modelInvokeCommand("probe-1", nil)
+	cmd1.RuntimeType = "pi"
+	if err := d.handleModelInvoke(context.Background(), stream, cmd1); err != nil {
+		t.Fatal(err)
+	}
+	<-invoker.started
+
+	cmd2 := modelInvokeCommand("probe-2", nil)
+	cmd2.RuntimeType = "pi"
+	if err := d.handleModelInvoke(context.Background(), stream, cmd2); err != nil {
+		t.Fatal(err)
+	}
+	if payload := waitForModelInvoked(t, stream, "probe-2"); payload["outcome"] != provider.ModelInvokeRuntimeUnavailable {
+		t.Fatalf("concurrent second probe was not held back: %v", payload)
+	}
+	if invoker.callCount() != modelInvokeBreakerThreshold+1 {
+		t.Fatalf("concurrent second probe invoked runtime: count = %d", invoker.callCount())
+	}
+
+	close(invoker.release)
+	if payload := waitForModelInvoked(t, stream, "probe-1"); payload["outcome"] != provider.ModelInvokeFailed {
+		t.Fatalf("probe-1 = %v", payload)
+	}
+
+	// A normal Run completing on that runtime resets the breaker immediately.
+	invoker.mu.Lock()
+	invoker.started = nil
+	invoker.release = nil
+	invoker.result = provider.ModelInvokeResult{Outcome: provider.ModelInvokeCompleted}
+	invoker.mu.Unlock()
+	d.resetModelInvokeBreaker("pi")
+	if payload := runCall("after-run-reset"); payload["outcome"] != provider.ModelInvokeCompleted {
+		t.Fatalf("after-run-reset = %v", payload)
+	}
+}
+
+func TestModelInvokeBreakerIgnoresStaleRevisionAndPostDrainOutcomes(t *testing.T) {
+	t.Run("stale diagnostics revision failure does not poison new revision", func(t *testing.T) {
+		invoker := &scriptedModelInvoker{
+			result:  provider.ModelInvokeResult{Outcome: provider.ModelInvokeRuntimeUnavailable, Reason: "down"},
+			started: make(chan string, 4),
+			release: make(chan struct{}),
+		}
+		d, stream := modelInvokeFixture(t, invoker)
+
+		// Launch 3 in-flight calls at diagnostics revision 1.
+		for i := range modelInvokeBreakerThreshold {
+			cmd := modelInvokeCommand(fmt.Sprintf("stale-%d", i+1), nil)
+			cmd.RuntimeType = "pi"
+			if err := d.handleModelInvoke(context.Background(), stream, cmd); err != nil {
+				t.Fatal(err)
+			}
+			<-invoker.started
+		}
+		// Inventory updates to revision 2 while revision 1 calls are still running.
+		diagnostics := mustJSON([]provider.RuntimeDiagnostic{{Type: "pi", Status: "ready", Models: []provider.RuntimeModel{}}})
+		if err := d.UpdateRuntimeInventory(context.Background(), []string{"pi"}, diagnostics, nil); err != nil {
+			t.Fatal(err)
+		}
+		// Release the stale revision 1 failures.
+		close(invoker.release)
+		for i := range modelInvokeBreakerThreshold {
+			waitForModelInvoked(t, stream, fmt.Sprintf("stale-%d", i+1))
+		}
+		d.WaitForOperations()
+
+		// Revision 2 must remain clean and admit calls immediately.
+		d.modelInvokeMu.Lock()
+		_, hasEntry := d.modelInvokeBreakers["pi"]
+		d.modelInvokeMu.Unlock()
+		if hasEntry {
+			t.Fatal("stale revision failures populated breaker for new diagnostics revision")
+		}
+	})
+
+	t.Run("post-drain completion does not reinsert breaker state", func(t *testing.T) {
+		invoker := &scriptedModelInvoker{
+			result:  provider.ModelInvokeResult{Outcome: provider.ModelInvokeRuntimeUnavailable, Reason: "down"},
+			started: make(chan string, 1),
+			release: make(chan struct{}),
+		}
+		d, stream := modelInvokeFixture(t, invoker)
+		cmd := modelInvokeCommand("inflight-drain", nil)
+		cmd.RuntimeType = "pi"
+		if err := d.handleModelInvoke(context.Background(), stream, cmd); err != nil {
+			t.Fatal(err)
+		}
+		<-invoker.started
+		d.Drain()
+		close(invoker.release)
+		d.WaitForOperations()
+
+		d.modelInvokeMu.Lock()
+		n := len(d.modelInvokeBreakers)
+		d.modelInvokeMu.Unlock()
+		if n != 0 {
+			t.Fatalf("modelInvokeBreakers has %d entries after Drain()", n)
+		}
+	})
+}
+
+func TestModelInvokeGatewayFailureTripsBreaker(t *testing.T) {
+	invoker := newFakeModelInvoker()
+	d, stream := modelInvokeFixture(t, invoker)
+	source := &gatewayModelSource{
+		err: &localmodels.ModelSourceError{Code: "BYOK_UNREACHABLE", Message: "The endpoint could not be reached."},
+	}
+	d.modelSource = source
+	clock := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	d.now = func() time.Time { return clock }
+
+	runCall := func(id string) map[string]any {
+		t.Helper()
+		cmd := modelInvokeCommand(id, nil)
+		cmd.RuntimeType = "codex"
+		if err := d.handleModelInvoke(context.Background(), stream, cmd); err != nil {
+			t.Fatal(err)
+		}
+		return waitForModelInvoked(t, stream, id)
+	}
+
+	for i := range modelInvokeBreakerThreshold {
+		payload := runCall(fmt.Sprintf("gw-fail-%d", i+1))
+		if payload["outcome"] != provider.ModelInvokeRuntimeUnavailable {
+			t.Fatalf("gw-fail-%d payload = %v", i+1, payload)
+		}
+	}
+	if len(source.runtime) != modelInvokeBreakerThreshold {
+		t.Fatalf("EnsureGateway calls = %d; want %d", len(source.runtime), modelInvokeBreakerThreshold)
+	}
+
+	// Subsequent call is rejected by the breaker before hitting EnsureGateway again.
+	payload := runCall("gw-blocked")
+	if payload["outcome"] != provider.ModelInvokeRuntimeUnavailable {
+		t.Fatalf("gw-blocked payload = %v", payload)
+	}
+	if len(source.runtime) != modelInvokeBreakerThreshold {
+		t.Fatalf("blocked call invoked EnsureGateway: calls = %d", len(source.runtime))
+	}
+	if invoker.calls() != 0 {
+		t.Fatalf("invoker calls = %d; want 0", invoker.calls())
 	}
 }

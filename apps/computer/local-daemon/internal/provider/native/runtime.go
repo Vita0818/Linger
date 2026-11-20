@@ -81,6 +81,10 @@ type Profile struct {
 	// PiConfigDigest identifies the user's Pi settings.json and models.json as
 	// the Daemon read them while preparing this Operation.
 	PiConfigDigest string
+	// PiSettingsJSON and PiModelsJSON carry the raw bytes already read while
+	// computing PiConfigDigest so Start does not re-read them from disk.
+	PiSettingsJSON []byte
+	PiModelsJSON   []byte
 	// RetainProcessTemp is called once per provider process before spawn. The
 	// returned release runs only after the process tree is confirmed gone.
 	RetainProcessTemp func() (release func() error, err error)

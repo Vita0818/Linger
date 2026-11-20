@@ -392,12 +392,12 @@ func (e Executor) Start(ctx context.Context, spec OperationSpec, emit EmitFunc) 
 		}
 		environment["LINGER_CLAUDE_SESSION_ROOT"] = filepath.Join(runtimeHome.Path, "sessions")
 	}
-	var piConfigDigest string
+	var piConfig localworkspace.PiConfig
 	if spec.Provider == "pi" {
 		var err error
 		environment, err = localworkspace.PiSourceEnvironment(environment)
 		if err == nil {
-			piConfigDigest, err = localworkspace.PiConfigDigest(environment)
+			piConfig, err = localworkspace.ReadPiConfig(environment)
 		}
 		if err == nil {
 			runtimeHome, err = localworkspace.PreparePiRuntimeHome(ctx, e.RuntimeHomeRoot, localworkspace.RuntimeHomeIdentity{
@@ -481,7 +481,9 @@ func (e Executor) Start(ctx context.Context, spec OperationSpec, emit EmitFunc) 
 		CodexToolVersion:    spec.CodexVersion,
 		CodexConfigArgs:     codexConfigArgs,
 		CodexConfigDigest:   codexConfigDigest,
-		PiConfigDigest:      piConfigDigest,
+		PiConfigDigest:      piConfig.Digest,
+		PiSettingsJSON:      piConfig.SettingsJSON,
+		PiModelsJSON:        piConfig.ModelsJSON,
 		ResidentSkillDigest: residentSkillDigest,
 	})
 	if err != nil {

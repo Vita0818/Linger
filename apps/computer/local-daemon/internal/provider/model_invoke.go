@@ -142,6 +142,10 @@ type ModelInvokeUsage struct {
 	OutputTokens      int64 `json:"output_tokens"`
 }
 
+// ModelInvokeContextTooLongReason is the structured-prefix failure reason
+// reported when a prompt exceeds the target model's context window.
+const ModelInvokeContextTooLongReason = "context_too_long: Model invocation prompt exceeds the model context window"
+
 // ModelInvokeResult is what executed model_invoke carries back.
 type ModelInvokeResult struct {
 	Outcome        string
@@ -151,6 +155,28 @@ type ModelInvokeResult struct {
 	RuntimeVersion string
 	Usage          *ModelInvokeUsage
 	Reason         string
+	// AvailabilityFailure marks a failed outcome caused by an unreachable
+	// runtime or model service rather than a per-request error.
+	AvailabilityFailure bool
+	// NonAvailability marks a runtime_unavailable outcome caused by an
+	// unsupported request mode rather than a runtime outage.
+	NonAvailability bool
+}
+
+// IsAvailabilityFailure reports whether the result represents a runtime-wide
+// availability outage rather than a per-request or mode-capability refusal.
+func (r ModelInvokeResult) IsAvailabilityFailure() bool {
+	if r.NonAvailability {
+		return false
+	}
+	switch r.Outcome {
+	case ModelInvokeRuntimeUnavailable, ModelInvokeAuthRequired, ModelInvokeRuntimeIncompatible:
+		return true
+	case ModelInvokeFailed:
+		return r.AvailabilityFailure
+	default:
+		return false
+	}
 }
 
 // ModelInvoker runs one-shot model calls on the installed Runtime
@@ -530,9 +556,11 @@ func codexModelInvokeArgs(mode, effort, model, work, schemaPath, lastPath string
 	args := []string{
 		"exec", "--skip-git-repo-check", "--ephemeral", "--sandbox", sandbox, "--ignore-rules",
 		"--color", "never", "-C", work,
-		"-c", fmt.Sprintf("model_reasoning_effort=%q", effort),
-		"-c", `web_search="disabled"`,
 	}
+	if effort != "" {
+		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", effort))
+	}
+	args = append(args, "-c", `web_search="disabled"`)
 	if model != "" {
 		args = append(args, "-m", model)
 	}
@@ -707,8 +735,16 @@ func claudeModelInvokeArgs(mode, effort string, schema json.RawMessage) []string
 	} else {
 		args = append(args, "--tools", "", "--permission-mode", "dontAsk")
 	}
-	return append(args, "--safe-mode", "--strict-mcp-config", "--no-session-persistence",
-		"--disable-slash-commands", "--effort", effort)
+	args = append(args, "--safe-mode", "--strict-mcp-config", "--no-session-persistence",
+		"--disable-slash-commands")
+	switch effort {
+	case "":
+	case "none":
+		args = append(args, "--thinking", "disabled")
+	default:
+		args = append(args, "--effort", effort)
+	}
+	return args
 }
 
 type claudeInvokeOutput struct {
@@ -878,6 +914,74 @@ func unavailableModelReason(reported string) (string, bool) {
 	return reason, true
 }
 
+var modelInvokeContextTooLongMarkers = []string{
+	"exceed_context_size_error",
+	"context_length_exceeded",
+	"context_window_exceeded",
+	"contextwindowexceeded",
+	"prompt_too_long",
+	"exceeds the available context size",
+	"maximum context length",
+	"prompt is too long",
+	"exceeds the context window",
+	"request too large",
+	"input is too long",
+	"token limit exceeded",
+}
+
+var modelInvokeTransportUnavailableMarkers = []string{
+	"econnrefused",
+	"connection refused",
+	"econnreset",
+	"connection reset",
+	"ehostunreach",
+	"enetunreach",
+	"enotfound",
+	"fetch failed",
+	"failed to fetch",
+	"dial tcp",
+	"502 bad gateway",
+	"503 service unavailable",
+	"status code 502",
+	"status code 503",
+	"http 502",
+	"http 503",
+	"service unavailable",
+	"no model loaded",
+	"model not loaded",
+	"model is loading",
+}
+
+func isModelInvokeContextTooLong(evidence string) bool {
+	lower := strings.ToLower(evidence)
+	for _, marker := range modelInvokeContextTooLongMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isModelInvokeAuthError(evidence string) bool {
+	lower := strings.ToLower(evidence)
+	for _, marker := range modelInvokeAuthMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isModelInvokeTransportUnavailable(evidence string) bool {
+	lower := strings.ToLower(evidence)
+	for _, marker := range modelInvokeTransportUnavailableMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // classifyModelInvokeFailure maps a failed run to an outcome. The caller's
 // cancellation wins over the call's own deadline, which wins over the CLI's
 // message.
@@ -900,15 +1004,19 @@ func classifyModelInvokeFailure(ctx, invokeCtx context.Context, err error, stder
 		reason = liveFailureMessage(stderr, err)
 	}
 	reason = truncateRunes(redact.Text(strings.TrimSpace(reason)), 300)
+	if isModelInvokeContextTooLong(evidence) {
+		return ModelInvokeResult{Outcome: ModelInvokeFailed, Reason: ModelInvokeContextTooLongReason}
+	}
 	for _, marker := range modelInvokeIncompatibleMarkers {
 		if strings.Contains(evidence, marker) {
 			return ModelInvokeResult{Outcome: ModelInvokeRuntimeIncompatible, Reason: reason}
 		}
 	}
-	for _, marker := range modelInvokeAuthMarkers {
-		if strings.Contains(evidence, marker) {
-			return ModelInvokeResult{Outcome: ModelInvokeAuthRequired, Reason: reason}
-		}
+	if isModelInvokeAuthError(evidence) {
+		return ModelInvokeResult{Outcome: ModelInvokeAuthRequired, Reason: reason}
+	}
+	if isModelInvokeTransportUnavailable(evidence) {
+		return ModelInvokeResult{Outcome: ModelInvokeFailed, Reason: reason, AvailabilityFailure: true}
 	}
 	return ModelInvokeResult{Outcome: ModelInvokeFailed, Reason: reason}
 }

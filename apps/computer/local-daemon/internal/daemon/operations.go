@@ -89,6 +89,8 @@ func (d *Daemon) finishOperation(ctx context.Context, command protocol.Command, 
 		if d.onModelUnavailable != nil && spec.Model != "" && provider.ClassifyExecutionFailure(spec.Provider, spec.CodexVersion, result.Status, result.FailureCode, result.Diagnostics).Code == "model_unavailable" {
 			d.onModelUnavailable(spec.Provider, spec.Model)
 		}
+	} else {
+		d.resetModelInvokeBreaker(spec.Provider)
 	}
 	slog.Info("runner.operation.finished", "operation_id", command.OperationID, "kind", spec.OperationKind,
 		"provider", spec.Provider, "status", terminalType, "failure_code", result.FailureCode,

@@ -11,7 +11,7 @@ import (
 // the same Pi profile and event handling as managed execution but no
 // persistent session. It returns the model Pi ran.
 func InvokePiModel(ctx context.Context, profile Profile, dir, instructionsFile, prompt, effort string) (Outcome, string, error) {
-	thinking, err := piThinkingLevel(effort)
+	thinking, err := piResolveThinkingLevel(profile, "", effort)
 	if err != nil {
 		return Outcome{}, "", err
 	}
@@ -44,11 +44,18 @@ func InvokePiModel(ctx context.Context, profile Profile, dir, instructionsFile, 
 
 	probeCtx, cancelProbe := context.WithTimeout(ctx, piStartupBudget)
 	state, err := proc.call(probeCtx, "get_state", nil, nil)
-	cancelProbe()
 	var catalog piCatalogState
 	if err != nil || json.Unmarshal(state.Data, &catalog) != nil {
+		cancelProbe()
 		return Outcome{}, "", errors.New("Pi background model state could not be read")
 	}
+	if clamped, ok := piStateThinkingLevel(catalog, thinking); ok {
+		if _, err := proc.call(probeCtx, "set_thinking_level", map[string]any{"level": clamped}, nil); err != nil {
+			cancelProbe()
+			return Outcome{}, "", errors.New("Pi background thinking level could not be applied")
+		}
+	}
+	cancelProbe()
 	model := ""
 	if catalog.Model.ID != "" {
 		model = catalog.Model.Provider + "/" + catalog.Model.ID

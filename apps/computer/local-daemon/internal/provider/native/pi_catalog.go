@@ -21,20 +21,23 @@ func PiRPCResourceArgs() []string {
 }
 
 type piCatalogState struct {
-	Model struct {
-		ID       string `json:"id"`
-		Provider string `json:"provider"`
-	} `json:"model"`
-	ThinkingLevel string `json:"thinkingLevel"`
+	Model         piCatalogModel `json:"model"`
+	ThinkingLevel string         `json:"thinkingLevel"`
 }
 
 type piCatalogModel struct {
-	ID               string                     `json:"id"`
-	Name             string                     `json:"name"`
-	Provider         string                     `json:"provider"`
-	Reasoning        bool                       `json:"reasoning"`
-	ThinkingLevelMap map[string]json.RawMessage `json:"thinkingLevelMap"`
-	ContextWindow    json.RawMessage            `json:"contextWindow"`
+	ID                          string                     `json:"id"`
+	Name                        string                     `json:"name"`
+	Provider                    string                     `json:"provider"`
+	Reasoning                   bool                       `json:"reasoning"`
+	ThinkingLevelMap            map[string]json.RawMessage `json:"thinkingLevelMap"`
+	AllowedReasoningEffort      []string                   `json:"allowedReasoningEffort"`
+	AllowedReasoningEffortSnake []string                   `json:"allowed_reasoning_effort"`
+	ReasoningEfforts            []string                   `json:"reasoningEfforts"`
+	ReasoningEffortsSnake       []string                   `json:"reasoning_efforts"`
+	DefaultReasoningEffort      string                     `json:"defaultReasoningEffort"`
+	DefaultReasoningEffortSnake string                     `json:"default_reasoning_effort"`
+	ContextWindow               json.RawMessage            `json:"contextWindow"`
 }
 
 // piThinkingLevels are Pi's levels in catalog order. Optional levels are
@@ -137,12 +140,12 @@ func piCatalogList(state piCatalogState, entries []json.RawMessage) (ModelList, 
 		if window, err := strconv.Atoi(strings.TrimSpace(string(entry.ContextWindow))); err == nil && window > 0 {
 			option.ContextWindow = window
 		}
-		if entry.Reasoning {
+		if entry.Reasoning || len(entry.declaredAllowedEfforts()) > 0 {
 			defaultLevel := ""
 			if option.Default {
 				defaultLevel = state.ThinkingLevel
 			}
-			option.Effort = piEffortSupport(entry.ThinkingLevelMap, defaultLevel)
+			option.Effort = piModelEffortSupport(entry, defaultLevel)
 		}
 		if models.add(option) && nameLabel {
 			named[option.Label]++
@@ -171,17 +174,5 @@ func piEffortSupport(levels map[string]json.RawMessage, defaultLevel string) *Ef
 		}
 		efforts.add(level.value, "")
 	}
-	support := efforts.support(defaultLevel)
-	if support == nil {
-		return nil
-	}
-	for i := range support.Options {
-		if support.Options[i].Value == "off" {
-			support.Options[i].Value = "none"
-		}
-	}
-	if support.Default == "off" {
-		support.Default = "none"
-	}
-	return support
+	return finalizeEffortSupport(efforts, defaultLevel)
 }

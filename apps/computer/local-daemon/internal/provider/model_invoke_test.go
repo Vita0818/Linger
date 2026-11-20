@@ -160,6 +160,23 @@ func TestClaudeModelInvokeArgsDisableToolsAndCustomizations(t *testing.T) {
 		argValue(workspace, "--permission-mode") != "acceptEdits" {
 		t.Fatalf("workspace args = %q", workspace)
 	}
+
+	noneArgs := claudeModelInvokeArgs(ModelInvokeText, "none", nil)
+	if slices.Contains(noneArgs, "--effort") || argValue(noneArgs, "--thinking") != "disabled" {
+		t.Fatalf("none args = %q; want --thinking disabled without --effort", noneArgs)
+	}
+
+	emptyArgs := claudeModelInvokeArgs(ModelInvokeText, "", nil)
+	if slices.Contains(emptyArgs, "--effort") || slices.Contains(emptyArgs, "--thinking") {
+		t.Fatalf("empty effort args = %q; want neither --effort nor --thinking", emptyArgs)
+	}
+
+	codexEmpty := codexModelInvokeArgs(ModelInvokeText, "", "", "/w", "", "/l")
+	for _, arg := range codexEmpty {
+		if strings.HasPrefix(arg, "model_reasoning_effort=") {
+			t.Fatalf("codex empty effort included reasoning override: %q", codexEmpty)
+		}
+	}
 }
 
 type codexInvokeFixture struct {
@@ -297,14 +314,19 @@ func TestModelInvokerBoundsTheReply(t *testing.T) {
 func TestModelInvokerClassifiesFailures(t *testing.T) {
 	for _, test := range []struct {
 		stderr, event, outcome string
+		wantAvailability       bool
+		wantContextTooLong     bool
 	}{
-		{stderr: "Reading prompt from stdin...\nError: Unknown feature flag: sleep_tool\n", outcome: ModelInvokeRuntimeIncompatible},
-		{stderr: "error: unexpected argument '--ignore-rules' found\n", outcome: ModelInvokeRuntimeIncompatible},
-		{event: `{"type":"turn.failed","error":{"message":"401 Unauthorized: token expired"}}`, outcome: ModelInvokeAuthRequired},
+		{stderr: "Reading prompt from stdin...\nError: Unknown feature flag: sleep_tool\n", outcome: ModelInvokeRuntimeIncompatible, wantAvailability: true},
+		{stderr: "error: unexpected argument '--ignore-rules' found\n", outcome: ModelInvokeRuntimeIncompatible, wantAvailability: true},
+		{event: `{"type":"turn.failed","error":{"message":"401 Unauthorized: token expired"}}`, outcome: ModelInvokeAuthRequired, wantAvailability: true},
 		// A model the account cannot use fails the same way on every attempt,
 		// so it is not reported as a transient failure.
-		{event: modelNotFoundEvent, outcome: ModelInvokeRuntimeIncompatible},
-		{stderr: "Error: stream disconnected before completion\n", outcome: ModelInvokeFailed},
+		{event: modelNotFoundEvent, outcome: ModelInvokeRuntimeIncompatible, wantAvailability: true},
+		{stderr: "Error: stream disconnected before completion\n", outcome: ModelInvokeFailed, wantAvailability: false},
+		{stderr: "Error: dial tcp 127.0.0.1:18100: connect: connection refused\n", outcome: ModelInvokeFailed, wantAvailability: true},
+		{event: `{"type":"turn.failed","error":{"message":"400 exceed_context_size_error: request exceeds the available context size (65536)"}}`, outcome: ModelInvokeFailed, wantAvailability: false, wantContextTooLong: true},
+		{stderr: "Error: prompt_too_long\n", outcome: ModelInvokeFailed, wantAvailability: false, wantContextTooLong: true},
 	} {
 		fixture := newCodexInvokeFixture(t, func(_ context.Context, command *exec.Cmd) error {
 			_, _ = io.WriteString(command.Stderr, test.stderr)
@@ -316,6 +338,12 @@ func TestModelInvokerClassifiesFailures(t *testing.T) {
 		result := fixture.invoker.Invoke(context.Background(), structuredRequest())
 		if result.Outcome != test.outcome || result.Reason == "" {
 			t.Fatalf("%q: result = %+v", test.stderr+test.event, result)
+		}
+		if result.IsAvailabilityFailure() != test.wantAvailability {
+			t.Fatalf("%q: IsAvailabilityFailure = %v; want %v", test.stderr+test.event, result.IsAvailabilityFailure(), test.wantAvailability)
+		}
+		if got := result.Reason == ModelInvokeContextTooLongReason; got != test.wantContextTooLong {
+			t.Fatalf("%q: reason = %q; wantContextTooLong = %v", test.stderr+test.event, result.Reason, test.wantContextTooLong)
 		}
 	}
 }

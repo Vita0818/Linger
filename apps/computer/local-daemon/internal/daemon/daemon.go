@@ -133,19 +133,21 @@ type Daemon struct {
 	activeOperations  map[string]*activeOperation
 	// A yielded Operation whose native cleanup is unknown still occupies this
 	// Computer. Its Runtime refuses new work until the Daemon restarts.
-	uncleanOperations  []OperationIdentity
-	preparationMu      sync.Mutex
-	preparedOperations map[string]*preparedOperation
-	providerPrepareMu  sync.Mutex
-	providerPrepares   map[string]*providerPrepare
-	sessionCompactMu   sync.Mutex
-	sessionCompacts    map[string]*sessionCompact
-	takeParkedSession  func(runtimeType, contextKey string) parkedSession
-	modelInvoker       ModelInvoker
-	modelInvokeMu      sync.Mutex
-	modelInvokes       map[string]*modelInvoke
-	localModels        LocalModelLibrary
-	modelSource        ModelSourceManager
+	uncleanOperations   []OperationIdentity
+	preparationMu       sync.Mutex
+	preparedOperations  map[string]*preparedOperation
+	providerPrepareMu   sync.Mutex
+	providerPrepares    map[string]*providerPrepare
+	sessionCompactMu    sync.Mutex
+	sessionCompacts     map[string]*sessionCompact
+	takeParkedSession   func(runtimeType, contextKey string) parkedSession
+	modelInvoker        ModelInvoker
+	modelInvokeMu       sync.Mutex
+	modelInvokes        map[string]*modelInvoke
+	modelInvokeBreakers map[string]*modelInvokeBreakerEntry
+	modelInvokeDrained  bool
+	localModels         LocalModelLibrary
+	modelSource         ModelSourceManager
 	// localModelsMu orders runner.local_models sends with their revision.
 	localModelsMu       sync.Mutex
 	localModelsRevision uint64
@@ -245,6 +247,7 @@ func New(options Options) (*Daemon, error) {
 		takeParkedSession:    takeNativeParkedSession,
 		modelInvoker:         options.ModelInvoker,
 		modelInvokes:         make(map[string]*modelInvoke),
+		modelInvokeBreakers:  make(map[string]*modelInvokeBreakerEntry),
 		localModels:          options.LocalModels,
 		modelSource:          options.ModelSource,
 		contextDispatchLimit: defaultContextDispatchLimit,

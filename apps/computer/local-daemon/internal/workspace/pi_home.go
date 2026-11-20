@@ -43,20 +43,36 @@ func PiSourceEnvironment(environment map[string]string) (map[string]string, erro
 	return result, nil
 }
 
-// PiConfigDigest identifies the user's Pi settings.json and models.json in
-// the agent directory PiSourceEnvironment chose. The Daemon reads them once
-// while it prepares an Operation, so a parked Pi serves later Operations until
-// the user's own edit changes them; auth.json is never read or moved.
-func PiConfigDigest(environment map[string]string) (string, error) {
+// PiConfig holds the SHA-256 digest and raw contents of Pi's settings.json and
+// models.json in the source agent directory. Missing files hash as empty and
+// leave their byte slice nil.
+type PiConfig struct {
+	Digest       string
+	SettingsJSON []byte
+	ModelsJSON   []byte
+}
+
+// ReadPiConfig reads the user's Pi settings.json and models.json once in the
+// agent directory PiSourceEnvironment chose, returning their combined digest
+// and raw contents. auth.json is never read or moved.
+func ReadPiConfig(environment map[string]string) (PiConfig, error) {
 	dir := environment["PI_CODING_AGENT_DIR"]
 	if dir == "" {
-		return "", errors.New("Pi source directory is unavailable")
+		return PiConfig{}, errors.New("Pi source directory is unavailable")
 	}
+	var config PiConfig
 	sum := sha256.New()
 	for _, name := range []string{"settings.json", "models.json"} {
 		data, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return "", fmt.Errorf("Pi settings could not be read: %w", err)
+			return PiConfig{}, fmt.Errorf("Pi settings could not be read: %w", err)
+		}
+		if err == nil {
+			if name == "settings.json" {
+				config.SettingsJSON = data
+			} else {
+				config.ModelsJSON = data
+			}
 		}
 		// Length-prefixed records keep adjacent files from blurring.
 		for _, value := range []string{name, string(data)} {
@@ -66,7 +82,20 @@ func PiConfigDigest(environment map[string]string) (string, error) {
 			sum.Write([]byte(value))
 		}
 	}
-	return hex.EncodeToString(sum.Sum(nil)), nil
+	config.Digest = hex.EncodeToString(sum.Sum(nil))
+	return config, nil
+}
+
+// PiConfigDigest identifies the user's Pi settings.json and models.json in
+// the agent directory PiSourceEnvironment chose. The Daemon reads them once
+// while it prepares an Operation, so a parked Pi serves later Operations until
+// the user's own edit changes them; auth.json is never read or moved.
+func PiConfigDigest(environment map[string]string) (string, error) {
+	config, err := ReadPiConfig(environment)
+	if err != nil {
+		return "", err
+	}
+	return config.Digest, nil
 }
 
 func PreparePiRuntimeHome(ctx context.Context, root string, identity RuntimeHomeIdentity) (*RuntimeHome, error) {

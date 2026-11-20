@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/simplexai-labs/linger/apps/computer/local-daemon/internal/provider/native"
 	localworkspace "github.com/simplexai-labs/linger/apps/computer/local-daemon/internal/workspace"
@@ -11,7 +12,11 @@ import (
 
 func invokePiModel(ctx context.Context, request ModelInvokeRequest, installed ModelInvokeRuntime, work, scratch string) ModelInvokeResult {
 	if request.Mode == ModelInvokeWorkspace {
-		return ModelInvokeResult{Outcome: ModelInvokeRuntimeUnavailable, Reason: "Pi background calls do not run file tools"}
+		return ModelInvokeResult{
+			Outcome:         ModelInvokeRuntimeUnavailable,
+			Reason:          "Pi background calls do not run file tools",
+			NonAvailability: true,
+		}
 	}
 	environment, err := localworkspace.PiSourceEnvironment(modelInvokeEnvironment(installed.Environment, scratch))
 	if err != nil {
@@ -38,8 +43,7 @@ func invokePiModel(ctx context.Context, request ModelInvokeRequest, installed Mo
 	case invokeCtx.Err() != nil:
 		return classifyModelInvokeFailure(ctx, invokeCtx, err, "", "")
 	case err != nil || answer.Status != "completed" || !answer.ExitConfirmed:
-		// Pi errors may include provider URLs or credentials.
-		return ModelInvokeResult{Outcome: ModelInvokeFailed, Reason: "Pi background call did not complete"}
+		return classifyPiModelInvokeFailure(err, answer)
 	case len(answer.Output) > ModelInvokeMaxTextBytes:
 		return ModelInvokeResult{Outcome: ModelInvokeOutputLimited, Reason: "Pi background reply exceeds 1 MiB"}
 	}
@@ -53,4 +57,27 @@ func invokePiModel(ctx context.Context, request ModelInvokeRequest, installed Mo
 		result.Usage.CachedInputTokens += count.CacheRead
 	}
 	return result
+}
+
+// classifyPiModelInvokeFailure maps Pi background call errors to sanitized
+// outcomes without forwarding raw Pi messages that may contain provider URLs
+// or credentials.
+func classifyPiModelInvokeFailure(err error, answer native.Outcome) ModelInvokeResult {
+	evidence := answer.Error
+	if err != nil {
+		evidence = err.Error() + "\n" + evidence
+	}
+	if isModelInvokeContextTooLong(evidence) {
+		return ModelInvokeResult{Outcome: ModelInvokeFailed, Reason: ModelInvokeContextTooLongReason}
+	}
+	if isModelInvokeAuthError(evidence) {
+		return ModelInvokeResult{Outcome: ModelInvokeAuthRequired, Reason: "Pi background authentication is required"}
+	}
+	if isModelInvokeTransportUnavailable(evidence) {
+		return ModelInvokeResult{Outcome: ModelInvokeRuntimeUnavailable, Reason: "Pi background model service is unavailable"}
+	}
+	if err != nil && !strings.Contains(strings.ToLower(err.Error()), "is unsupported") {
+		return ModelInvokeResult{Outcome: ModelInvokeRuntimeUnavailable, Reason: "Pi background runtime failed to start"}
+	}
+	return ModelInvokeResult{Outcome: ModelInvokeFailed, Reason: "Pi background call did not complete"}
 }

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/simplexai-labs/linger/apps/computer/local-daemon/internal/provider/native"
 )
 
 func TestModelInvokerPi(t *testing.T) {
@@ -98,10 +101,75 @@ data: [DONE]
 		if result.Outcome != ModelInvokeRuntimeUnavailable || !strings.Contains(result.Reason, "file tools") {
 			t.Fatalf("Pi invocation = %+v", result)
 		}
+		if result.IsAvailabilityFailure() {
+			t.Fatal("Pi workspace mode refusal must not count as a runtime availability failure")
+		}
 		select {
 		case <-payloads:
 			t.Fatal("sent a prompt for a workspace call")
 		default:
 		}
 	})
+}
+
+func TestClassifyPiModelInvokeFailureSanitizesAndDistinguishesCauses(t *testing.T) {
+	tests := []struct {
+		name             string
+		err              error
+		answerError      string
+		wantOutcome      string
+		wantReason       string
+		wantAvailability bool
+	}{
+		{
+			name:             "llama-server 65K context overflow",
+			answerError:      `POST http://127.0.0.1:18100/v1/chat/completions Bearer sk-secret: {"error":{"type":"exceed_context_size_error","message":"request (70000 tokens) exceeds the available context size (65536 tokens)"}}`,
+			wantOutcome:      ModelInvokeFailed,
+			wantReason:       ModelInvokeContextTooLongReason,
+			wantAvailability: false,
+		},
+		{
+			name:             "local server connection refused",
+			answerError:      "fetch failed: connect ECONNREFUSED 127.0.0.1:18100",
+			wantOutcome:      ModelInvokeRuntimeUnavailable,
+			wantReason:       "Pi background model service is unavailable",
+			wantAvailability: true,
+		},
+		{
+			name:             "unauthorized provider key",
+			answerError:      "401 Unauthorized: invalid_api_key for https://secret.example/v1",
+			wantOutcome:      ModelInvokeAuthRequired,
+			wantReason:       "Pi background authentication is required",
+			wantAvailability: true,
+		},
+		{
+			name:             "pi process launch failure",
+			err:              errors.New("Pi could not be started: executable file not found"),
+			wantOutcome:      ModelInvokeRuntimeUnavailable,
+			wantReason:       "Pi background runtime failed to start",
+			wantAvailability: true,
+		},
+		{
+			name:             "generic per-request model failure does not trip breaker",
+			answerError:      "400 Bad Request: schema mismatch on https://secret.example/v1",
+			wantOutcome:      ModelInvokeFailed,
+			wantReason:       "Pi background call did not complete",
+			wantAvailability: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyPiModelInvokeFailure(tc.err, native.Outcome{Status: "failed", Error: tc.answerError})
+			if got.Outcome != tc.wantOutcome || got.Reason != tc.wantReason {
+				t.Fatalf("got = %+v; want outcome=%q reason=%q", got, tc.wantOutcome, tc.wantReason)
+			}
+			if got.IsAvailabilityFailure() != tc.wantAvailability {
+				t.Fatalf("IsAvailabilityFailure = %v; want %v", got.IsAvailabilityFailure(), tc.wantAvailability)
+			}
+			if strings.Contains(got.Reason, "127.0.0.1") || strings.Contains(got.Reason, "sk-secret") || strings.Contains(got.Reason, "secret.example") {
+				t.Fatalf("reason leaked sensitive details: %q", got.Reason)
+			}
+		})
+	}
 }

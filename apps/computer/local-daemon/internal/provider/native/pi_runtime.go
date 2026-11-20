@@ -67,7 +67,7 @@ func (p *piRuntime) Start(ctx context.Context, prompt string, spec RunSpec) (*Ru
 	}
 	plan := piLaunchPlan{prompt: prompt, spec: spec, sessionID: sessionID, sessionDir: filepath.Join(root, sessionID)}
 	plan.fence = captureReleaseFence(p.profile)
-	if plan.thinking, err = piThinkingLevel(spec.Effort); err != nil {
+	if plan.thinking, err = piResolveThinkingLevel(p.profile, spec.Model, spec.Effort); err != nil {
 		return nil, err
 	}
 	if plan.program, err = piResolveProgram(p.profile.Program); err != nil {
@@ -242,6 +242,7 @@ func (p *piRuntime) spawn(ctx context.Context, plan piLaunchPlan, lock *os.File)
 
 	runCtx, cancel := budgetContext(ctx, spec.Budget)
 	turn := newPiTurn(runCtx, cancel, proc, false, plan.fence, p.profile.Logger)
+	turn.requestedThinking = plan.thinking
 	turn.readiness = plan.spec.Readiness
 	turn.reviewer, turn.dir = spec.PermissionReviewer, spec.Dir
 	turn.stopHook = plan.spec.StopHook
