@@ -172,11 +172,79 @@ func immutableContentDisposition(record immutableContentMetadata) string {
 			}
 		}
 	}
-	formatted := mime.FormatMediaType(disposition, map[string]string{"filename": record.Filename})
-	if formatted == "" {
-		return disposition
+	if isPurePrintableASCII(record.Filename) {
+		formatted := mime.FormatMediaType(disposition, map[string]string{"filename": record.Filename})
+		if formatted == "" {
+			return disposition
+		}
+		return formatted
 	}
-	return formatted
+	fallback := asciiDispositionFallback(record.Filename)
+	return fmt.Sprintf(`%s; filename=%q; filename*=UTF-8''%s`, disposition, fallback, encodeRFC5987Value(record.Filename))
+}
+
+func isPurePrintableASCII(value string) bool {
+	for index := 0; index < len(value); index++ {
+		if value[index] < 0x20 || value[index] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func asciiDispositionFallback(filename string) string {
+	ext := filepath.Ext(filename)
+	if !isPurePrintableASCII(ext) || strings.ContainsAny(ext, `"/\; `) {
+		ext = ""
+	}
+	stem := strings.TrimSuffix(filename, ext)
+	var builder strings.Builder
+	for index := 0; index < len(stem); index++ {
+		b := stem[index]
+		if b < 0x20 || b > 0x7e {
+			continue
+		}
+		if b == '"' || b == '\\' || b == '/' || b == ';' {
+			builder.WriteByte(' ')
+			continue
+		}
+		builder.WriteByte(b)
+	}
+	cleanStem := strings.Trim(strings.Join(strings.Fields(builder.String()), " "), ". ")
+	if cleanStem == "" {
+		cleanStem = "document"
+	}
+	return cleanStem + ext
+}
+
+// encodeRFC5987Value percent-encodes UTF-8 bytes outside RFC 5987 attr-char.
+func encodeRFC5987Value(value string) string {
+	const hexDigits = "0123456789ABCDEF"
+	var builder strings.Builder
+	builder.Grow(len(value) * 3)
+	for index := 0; index < len(value); index++ {
+		b := value[index]
+		if isRFC5987AttrChar(b) {
+			builder.WriteByte(b)
+			continue
+		}
+		builder.WriteByte('%')
+		builder.WriteByte(hexDigits[b>>4])
+		builder.WriteByte(hexDigits[b&0x0f])
+	}
+	return builder.String()
+}
+
+func isRFC5987AttrChar(b byte) bool {
+	if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') {
+		return true
+	}
+	switch b {
+	case '!', '#', '$', '&', '+', '-', '.', '^', '_', '`', '|', '~':
+		return true
+	default:
+		return false
+	}
 }
 
 type artifactByteRange struct {

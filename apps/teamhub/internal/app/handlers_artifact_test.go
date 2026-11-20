@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/hex"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -230,6 +231,65 @@ func TestImmutableContentDisposition(t *testing.T) {
 			got := immutableContentDisposition(immutableContentMetadata{Filename: test.filename, MediaType: test.mediaType})
 			if !strings.HasPrefix(got, test.want+";") {
 				t.Fatalf("immutableContentDisposition(%q, %q)=%q want %q", test.filename, test.mediaType, got, test.want)
+			}
+		})
+	}
+}
+
+func TestImmutableContentDispositionSupportsASCIIAndUTF8RFC5987(t *testing.T) {
+	tests := []struct {
+		name             string
+		filename         string
+		wantSubstring    string
+		wantRFC5987      bool
+		wantASCIIPart    string
+		wantParsedResult string
+	}{
+		{
+			name:             "ascii markdown title",
+			filename:         "WIN015-DOC-TITLE.md",
+			wantSubstring:    "WIN015-DOC-TITLE.md",
+			wantRFC5987:      false,
+			wantParsedResult: "WIN015-DOC-TITLE.md",
+		},
+		{
+			name:             "pure utf8 cjk title",
+			filename:         "\u4e2d\u6587\u6587\u6863.md",
+			wantSubstring:    "filename*=UTF-8''%E4%B8%AD%E6%96%87%E6%96%87%E6%A1%A3.md",
+			wantRFC5987:      true,
+			wantASCIIPart:    `filename="document.md"`,
+			wantParsedResult: "\u4e2d\u6587\u6587\u6863.md",
+		},
+		{
+			name:             "mixed ascii and utf8 cjk title",
+			filename:         "WIN015 \u4e2d\u6587.md",
+			wantSubstring:    "filename*=UTF-8''WIN015%20%E4%B8%AD%E6%96%87.md",
+			wantRFC5987:      true,
+			wantASCIIPart:    `filename="WIN015.md"`,
+			wantParsedResult: "WIN015 \u4e2d\u6587.md",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := immutableContentDisposition(immutableContentMetadata{
+				Filename:  tc.filename,
+				MediaType: "text/markdown",
+			})
+			if !strings.HasPrefix(got, "attachment;") {
+				t.Fatalf("disposition=%q want attachment prefix", got)
+			}
+			if !strings.Contains(got, tc.wantSubstring) {
+				t.Fatalf("disposition=%q missing %q", got, tc.wantSubstring)
+			}
+			if tc.wantRFC5987 && !strings.Contains(got, tc.wantASCIIPart) {
+				t.Fatalf("disposition=%q missing ASCII fallback %q", got, tc.wantASCIIPart)
+			}
+			mediaType, params, err := mime.ParseMediaType(got)
+			if err != nil {
+				t.Fatalf("mime.ParseMediaType(%q): %v", got, err)
+			}
+			if mediaType != "attachment" || params["filename"] != tc.wantParsedResult {
+				t.Fatalf("parsed=(%q, %v) want filename=%q", mediaType, params, tc.wantParsedResult)
 			}
 		})
 	}

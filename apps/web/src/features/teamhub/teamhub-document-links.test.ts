@@ -135,3 +135,101 @@ it("manages link policies with explicit versions and treats missing policy as di
     (await sentRequests(fetchRequest)).map(([, init]) => init?.method),
   ).toEqual(["GET", "PUT", "DELETE"]);
 });
+
+function encodeBase64UrlUtf8(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
+}
+
+it.each([
+  ["ASCII title", "WIN015-DOC-TITLE.md"],
+  ["UTF-8 CJK title", "\u4e2d\u6587\u6587\u6863.md"],
+  ["mixed ASCII and UTF-8 title", "WIN015-\u6d4b\u8bd5\u6807\u9898.md"],
+])("decodes %s from unpadded X-Document-Filename", async (_label, title) => {
+  const token = `doc_link_${"b".repeat(43)}`;
+  const content = new TextEncoder().encode("# Body\n");
+  const fetchRequest = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(
+      Response.json({
+        link_id: "link-1",
+        document_id: "doc-1",
+        tenant_id: "tenant-1",
+        role: "viewer",
+        version: 1,
+      }),
+    )
+    .mockResolvedValueOnce(
+      new Response(content, {
+        headers: {
+          "Content-Type": "text/markdown",
+          "X-Document-Id": "doc-1",
+          "X-Document-Version-Id": "version-1",
+          "X-Document-Filename": encodeBase64UrlUtf8(title),
+          "X-Document-Representation-Format": "markdown",
+          "X-Document-Read-Only": "true",
+          "X-Content-Sha256": bytesToHex(sha256(content)),
+        },
+      }),
+    );
+  const client = createHttpTeamHubClient({
+    baseUrl: "https://web.test/",
+    fetchRequest,
+  });
+  const result = await client.documentLinks.download(token);
+  expect(result.filename).toBe(title);
+});
+
+it.each([
+  [
+    "RFC 5987 UTF-8 filename* over ASCII fallback",
+    `attachment; filename="document.md"; filename*=UTF-8''${encodeURIComponent("\u4e2d\u6587\u6587\u6863.md")}`,
+    "\u4e2d\u6587\u6587\u6863.md",
+  ],
+  [
+    "ASCII Content-Disposition filename",
+    'attachment; filename="WIN015-DOC-TITLE.md"',
+    "WIN015-DOC-TITLE.md",
+  ],
+])(
+  "falls back to Content-Disposition for %s when X-Document-Filename is absent",
+  async (_label, disposition, expected) => {
+    const token = `doc_link_${"c".repeat(43)}`;
+    const content = new TextEncoder().encode("# Body\n");
+    const fetchRequest = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        Response.json({
+          link_id: "link-1",
+          document_id: "doc-1",
+          tenant_id: "tenant-1",
+          role: "viewer",
+          version: 1,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(content, {
+          headers: {
+            "Content-Type": "text/markdown",
+            "Content-Disposition": disposition,
+            "X-Document-Id": "doc-1",
+            "X-Document-Version-Id": "version-1",
+            "X-Document-Representation-Format": "markdown",
+            "X-Document-Read-Only": "true",
+            "X-Content-Sha256": bytesToHex(sha256(content)),
+          },
+        }),
+      );
+    const client = createHttpTeamHubClient({
+      baseUrl: "https://web.test/",
+      fetchRequest,
+    });
+    const result = await client.documentLinks.download(token);
+    expect(result.filename).toBe(expected);
+  },
+);
