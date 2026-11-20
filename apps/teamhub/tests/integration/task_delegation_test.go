@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/simplexai-labs/linger/apps/teamhub/internal/agentcredential"
 )
@@ -216,4 +218,148 @@ func TestDelegatedRunningTasksAreCappedPerAgent(t *testing.T) {
 	if got := countRows(t, env, `SELECT count(*) FROM work_items WHERE kind='task' AND created_by_actor_id='actor_acme_official'`); got != 10 {
 		t.Fatalf("running Tasks=%d want=10", got)
 	}
+}
+
+func TestConcurrentTaskDelegationHasNoDeadlock(t *testing.T) {
+	allowParallelIntegrationTest(t)
+	env, _, issued, roomID := newAgentCLIIdentity(t)
+
+	t.Run("shared registration lock plus delegation advisory lock never deadlocks", func(t *testing.T) {
+		tx, err := env.pool.Begin(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(t.Context())
+
+		var active string
+		if err := tx.QueryRow(
+			t.Context(),
+			`SELECT status FROM agent_registrations WHERE actor_id='actor_acme_official' AND tenant_id=$1 FOR SHARE`,
+			acmeTenant,
+		).Scan(&active); err != nil {
+			t.Fatalf("acquire shared registration lock: %v", err)
+		}
+
+		type createOutcome struct {
+			code int
+			body []byte
+		}
+		done := make(chan createOutcome, 1)
+		go func() {
+			code, body := postDelegatedTask(
+				t, env, issued, "delegate-lock-order", "Lock order probe", "Must not deadlock with shared registration lock.",
+				taskDelegationRoomContext(roomID),
+			)
+			done <- createOutcome{code: code, body: body}
+		}()
+
+		// Give the delegation request a moment to reach its advisory/row locks if it blocks.
+		var outcome createOutcome
+		var completedEarly bool
+		select {
+		case outcome = <-done:
+			completedEarly = true
+		case <-time.After(150 * time.Millisecond):
+		}
+
+		// Mirror a concurrent delegation waiting for the same per-Agent advisory lock
+		// while holding FOR SHARE on agent_registrations.
+		if _, err := tx.Exec(
+			t.Context(),
+			`SELECT pg_advisory_xact_lock(hashtextextended('task-delegation|actor_acme_official', 0))`,
+		); err != nil {
+			t.Fatalf("acquire advisory lock after shared registration lock: %v", err)
+		}
+		if err := tx.Commit(t.Context()); err != nil {
+			t.Fatalf("commit shared-lock transaction: %v", err)
+		}
+
+		if !completedEarly {
+			select {
+			case outcome = <-done:
+			case <-time.After(30 * time.Second):
+				t.Fatal("delegation request timed out")
+			}
+		}
+		if outcome.code != http.StatusOK {
+			t.Fatalf("delegation under concurrent shared registration lock=%d %s", outcome.code, outcome.body)
+		}
+	})
+
+	t.Run("parallel creates and wakes for the same Agent complete without deadlock", func(t *testing.T) {
+		// Seed one stopped Task to exercise concurrent Task wake (Send -> checkRunningCap) alongside Creates.
+		stopped := createDelegatedTask(t, env, issued, "delegate-burst-seed", "Seed task", "Seed task to stop and wake.", roomID)
+		if code, body := postTaskCommand(t, env, issued, "stop", map[string]any{
+			"invocation_id": mcpCreationInvocationID("delegate-burst-stop"), "task_id": stopped.TaskID,
+		}, taskDelegationRoomContext(roomID)); code != http.StatusOK {
+			t.Fatalf("stop seed task=%d %s", code, body)
+		}
+
+		const concurrentCreates = 6
+		start := make(chan struct{})
+		var ready sync.WaitGroup
+		ready.Add(concurrentCreates + 1)
+		var wait sync.WaitGroup
+		wait.Add(concurrentCreates + 1)
+
+		type result struct {
+			name   string
+			code   int
+			body   []byte
+			taskID string
+		}
+		results := make(chan result, concurrentCreates+1)
+
+		for index := range concurrentCreates {
+			go func(index int) {
+				defer wait.Done()
+				ready.Done()
+				<-start
+				code, body := postDelegatedTask(
+					t, env, issued,
+					fmt.Sprintf("delegate-burst-%d", index),
+					fmt.Sprintf("Burst task %d", index),
+					"Run concurrently without deadlock.",
+					taskDelegationRoomContext(roomID),
+				)
+				var parsed delegatedTaskResponse
+				_ = json.Unmarshal(body, &parsed)
+				results <- result{name: fmt.Sprintf("create-%d", index), code: code, body: body, taskID: parsed.TaskID}
+			}(index)
+		}
+
+		go func() {
+			defer wait.Done()
+			ready.Done()
+			<-start
+			code, body := postTaskCommand(t, env, issued, "send", map[string]any{
+				"invocation_id": mcpCreationInvocationID("delegate-burst-wake"),
+				"task_id":       stopped.TaskID,
+				"message":       "Wake alongside concurrent creates.",
+				"steer":         false,
+			}, taskDelegationRoomContext(roomID))
+			results <- result{name: "wake", code: code, body: body, taskID: stopped.TaskID}
+		}()
+
+		ready.Wait()
+		close(start)
+		wait.Wait()
+		close(results)
+
+		createdIDs := map[string]struct{}{}
+		for item := range results {
+			if item.code != http.StatusOK {
+				t.Fatalf("%s failed: status=%d body=%s", item.name, item.code, item.body)
+			}
+			if strings.HasPrefix(item.name, "create-") {
+				if item.taskID == "" {
+					t.Fatalf("%s returned empty task_id: %s", item.name, item.body)
+				}
+				createdIDs[item.taskID] = struct{}{}
+			}
+		}
+		if len(createdIDs) != concurrentCreates {
+			t.Fatalf("distinct created tasks=%d want=%d", len(createdIDs), concurrentCreates)
+		}
+	})
 }
