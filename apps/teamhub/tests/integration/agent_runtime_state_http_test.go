@@ -457,6 +457,220 @@ func TestAgentLocalRunReplyStatus(t *testing.T) {
 	finishRun(run5)
 }
 
+func TestAgentLocalRunDeliverFallbackReply(t *testing.T) {
+	allowParallelIntegrationTest(t)
+	databaseURL := newIntegrationDatabase(t)
+	pool, err := pgxpool.New(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatalf("open Agent Local Run fallback reply database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	seedReadyFixtureComputers(t, pool)
+	application, err := newTestApp(context.Background(), config.ForTest(func(c *config.Config) {
+		c.DatabaseURL = databaseURL
+		c.SessionTTL = time.Hour
+		c.CookieName = "teamhub_session"
+		c.TeamHubInternalToken = teamHubInternalToken
+		c.NodeServicesInternalToken = nodeServicesInternalToken
+		c.AgentRunTokenSecret = agentRunTokenSecret
+		c.ArtifactStorageRoot = t.TempDir()
+		c.ArtifactMaxBytes = 1 << 20
+	}), skipping(app.SkillInstall), skipping(app.SkillPackageProbe),
+		skipping(app.RoomDocumentJobs), skipping(app.AgentCredentialSweep), skipping(app.PersonalWikiJobs))
+	if err != nil {
+		t.Fatalf("start TeamHub for fallback reply test: %v", err)
+	}
+	t.Cleanup(application.Close)
+
+	const (
+		roomID          = "http-fallback-reply-room"
+		threadID        = "http-fallback-reply-thread"
+		foreignRoomID   = "http-fallback-reply-foreign-room"
+		foreignThreadID = "http-fallback-reply-foreign-thread"
+		epoch           = "http-fallback-reply-epoch"
+	)
+	insertRuntimeRoomMembership(t, pool, roomID)
+	insertRuntimeRoomMembership(t, pool, threadID)
+	insertRuntimeRoomMembership(t, pool, foreignRoomID)
+	insertRuntimeRoomMembership(t, pool, foreignThreadID)
+	for _, stmt := range []string{
+		`INSERT INTO messages(id,tenant_id,room_id,author_actor_id,body,segments)
+		 VALUES('fallback-reply-root','tenant_acme','http-fallback-reply-room','actor_acme_alice','Root','[{"type":"text","content":"Root"}]')`,
+		`UPDATE rooms SET parent_room_id='http-fallback-reply-room',root_message_id='fallback-reply-root'
+		 WHERE id='http-fallback-reply-thread' AND tenant_id='tenant_acme'`,
+		`INSERT INTO messages(id,tenant_id,room_id,author_actor_id,body,segments)
+		 VALUES('fallback-reply-foreign-root','tenant_acme','http-fallback-reply-foreign-room','actor_acme_alice','Foreign root','[{"type":"text","content":"Foreign root"}]')`,
+		`UPDATE rooms SET parent_room_id='http-fallback-reply-foreign-room',root_message_id='fallback-reply-foreign-root'
+		 WHERE id='http-fallback-reply-foreign-thread' AND tenant_id='tenant_acme'`,
+	} {
+		if _, err := pool.Exec(t.Context(), stmt); err != nil {
+			t.Fatalf("seed fallback reply Rooms and Threads: %v", err)
+		}
+	}
+
+	handler := application.Handler()
+	status, body := agentRuntimeStateRequest(t, handler, http.MethodPost, "/v0/agent-runtime/contexts", teamHubInternalToken, map[string]any{
+		"target_residency": "active",
+		"ref":              map[string]any{"kind": "meta", "agent_id": testRuntimeAgentID, "room_id": roomID},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("ensure Context status=%d body=%s", status, body)
+	}
+	var ensured struct {
+		Context struct {
+			ContextKey string `json:"context_key"`
+		} `json:"context"`
+	}
+	decode(t, body, &ensured)
+	contextKey := ensured.Context.ContextKey
+
+	status, body = agentRuntimeStateRequest(t, handler, http.MethodPost, "/v0/agent-runtime/epochs", teamHubInternalToken, map[string]any{
+		"epoch": epoch,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("start epoch status=%d body=%s", status, body)
+	}
+
+	startRun := func(inputID string) string {
+		t.Helper()
+		code, raw := agentRuntimeStateRequest(t, handler, http.MethodPost, "/v0/agent-runtime/trusted-turns", teamHubInternalToken, map[string]any{
+			"context_key": contextKey, "epoch": epoch,
+			"inputs": []any{runtimeHTTPInput(inputID, "question")},
+		})
+		if code != http.StatusOK {
+			t.Fatalf("submit turn %s status=%d body=%s", inputID, code, raw)
+		}
+		var submitted teamhubinternal.SubmitAgentTrustedTurnResult
+		decode(t, raw, &submitted)
+		code, raw = agentRuntimeStateRequest(t, handler, http.MethodPost, "/v0/agent-runtime/runs/claim", teamHubInternalToken, map[string]any{
+			"context_key": contextKey, "epoch": epoch, "claim_id": "claim-" + inputID,
+		})
+		if code != http.StatusOK {
+			t.Fatalf("claim run %s status=%d body=%s", inputID, code, raw)
+		}
+		return submitted.RunId
+	}
+	finishRun := func(runID string) {
+		t.Helper()
+		code, raw := agentRuntimeStateRequest(t, handler, http.MethodPost, "/v0/agent-runtime/runs/finish", teamHubInternalToken, map[string]any{
+			"context_key": contextKey, "epoch": epoch, "run_id": runID,
+			"terminal": map[string]any{"type": "succeeded"},
+		})
+		if code != http.StatusOK {
+			t.Fatalf("finish run %s status=%d body=%s", runID, code, raw)
+		}
+	}
+	deliverFallback := func(runID, text, inboxID string) (int, []byte) {
+		t.Helper()
+		payload := map[string]any{
+			"context_key": contextKey,
+			"epoch":       epoch,
+			"run_id":      runID,
+			"text":        text,
+		}
+		if inboxID != "" {
+			payload["inbox_id"] = inboxID
+		}
+		return agentRuntimeStateRequest(t, handler, http.MethodPost, "/v0/agent-runtime/runs/fallback-reply", teamHubInternalToken, payload)
+	}
+	countRunMessages := func(runID string) int {
+		t.Helper()
+		var count int
+		if err := pool.QueryRow(t.Context(), `
+			SELECT count(*) FROM messages
+			WHERE tenant_id='tenant_acme' AND local_run_id=$1 AND message_kind='conversation'`, runID).Scan(&count); err != nil {
+			t.Fatalf("count messages for %s: %v", runID, err)
+		}
+		return count
+	}
+
+	// 1. First delivery persists the fallback message in the Room.
+	run1 := startRun("fallback-run-1")
+	status, body = deliverFallback(run1, "Fallback answer for room.", "room:"+roomID)
+	if status != http.StatusOK {
+		t.Fatalf("first fallback delivery status=%d body=%s", status, body)
+	}
+	var first teamhubinternal.DeliverAgentLocalRunFallbackReplyResult
+	decode(t, body, &first)
+	if !first.Delivered || first.AlreadySent || first.MessageId == nil || *first.MessageId == "" {
+		t.Fatalf("first fallback delivery=%+v", first)
+	}
+	var persistedRoomID, persistedAuthor, persistedBody string
+	if err := pool.QueryRow(t.Context(), `
+		SELECT room_id, author_actor_id, body FROM messages
+		WHERE tenant_id='tenant_acme' AND id=$1 AND local_run_id=$2 AND message_kind='conversation'`,
+		*first.MessageId, run1).Scan(&persistedRoomID, &persistedAuthor, &persistedBody); err != nil {
+		t.Fatalf("read persisted fallback message: %v", err)
+	}
+	if persistedRoomID != roomID || persistedAuthor != "actor_acme_official" || persistedBody != "Fallback answer for room." {
+		t.Fatalf("persisted fallback message room=%q author=%q body=%q", persistedRoomID, persistedAuthor, persistedBody)
+	}
+	if count := countRunMessages(run1); count != 1 {
+		t.Fatalf("run1 message count=%d, want 1", count)
+	}
+
+	// 2. Replaying the same local_run_id returns the same message_id idempotently.
+	status, body = deliverFallback(run1, "Fallback answer for room.", "room:"+roomID)
+	if status != http.StatusOK {
+		t.Fatalf("replayed fallback delivery status=%d body=%s", status, body)
+	}
+	var replayed teamhubinternal.DeliverAgentLocalRunFallbackReplyResult
+	decode(t, body, &replayed)
+	if !replayed.Delivered || replayed.AlreadySent || replayed.MessageId == nil || *replayed.MessageId != *first.MessageId {
+		t.Fatalf("replayed fallback delivery=%+v, want message_id=%q", replayed, *first.MessageId)
+	}
+	if count := countRunMessages(run1); count != 1 {
+		t.Fatalf("run1 message count after replay=%d, want 1", count)
+	}
+	finishRun(run1)
+
+	// 3. A foreign Thread or Room target is rejected with 403, while a child Thread succeeds.
+	run2 := startRun("fallback-run-2")
+	status, body = deliverFallback(run2, "Wrong thread.", "thread:"+foreignThreadID)
+	assertAgentRuntimeHTTPError(t, status, body, http.StatusForbidden, "INBOX_NOT_AUTHORIZED")
+	status, body = deliverFallback(run2, "Wrong room.", "room:"+foreignRoomID)
+	assertAgentRuntimeHTTPError(t, status, body, http.StatusForbidden, "INBOX_NOT_AUTHORIZED")
+	if count := countRunMessages(run2); count != 0 {
+		t.Fatalf("run2 message count after forbidden targets=%d, want 0", count)
+	}
+	status, body = deliverFallback(run2, "Fallback answer for thread.", "thread:"+threadID)
+	if status != http.StatusOK {
+		t.Fatalf("child thread fallback delivery status=%d body=%s", status, body)
+	}
+	var threadResult teamhubinternal.DeliverAgentLocalRunFallbackReplyResult
+	decode(t, body, &threadResult)
+	if !threadResult.Delivered || threadResult.AlreadySent || threadResult.MessageId == nil || *threadResult.MessageId == "" {
+		t.Fatalf("child thread fallback delivery=%+v", threadResult)
+	}
+	if err := pool.QueryRow(t.Context(), `
+		SELECT room_id, body FROM messages
+		WHERE tenant_id='tenant_acme' AND id=$1 AND local_run_id=$2`,
+		*threadResult.MessageId, run2).Scan(&persistedRoomID, &persistedBody); err != nil {
+		t.Fatalf("read persisted thread fallback message: %v", err)
+	}
+	if persistedRoomID != threadID || persistedBody != "Fallback answer for thread." {
+		t.Fatalf("persisted thread fallback message room=%q body=%q", persistedRoomID, persistedBody)
+	}
+	finishRun(run2)
+
+	// 4. A Run whose Agent already posted a message returns already_sent=true without duplicating.
+	run3 := startRun("fallback-run-3")
+	insertRuntimeRunMessageFixture(t, pool, roomID, "msg-fallback-existing", run3, "Already posted by agent")
+	status, body = deliverFallback(run3, "Duplicate fallback must not post.", "room:"+roomID)
+	if status != http.StatusOK {
+		t.Fatalf("already-sent fallback delivery status=%d body=%s", status, body)
+	}
+	var alreadySent teamhubinternal.DeliverAgentLocalRunFallbackReplyResult
+	decode(t, body, &alreadySent)
+	if !alreadySent.Delivered || !alreadySent.AlreadySent || alreadySent.MessageId == nil || *alreadySent.MessageId != "msg-fallback-existing" {
+		t.Fatalf("already-sent fallback delivery=%+v, want already_sent=true message_id=msg-fallback-existing", alreadySent)
+	}
+	if count := countRunMessages(run3); count != 1 {
+		t.Fatalf("run3 message count=%d, want 1", count)
+	}
+	finishRun(run3)
+}
+
 func agentRuntimeStateRequest(
 	t *testing.T,
 	handler http.Handler,

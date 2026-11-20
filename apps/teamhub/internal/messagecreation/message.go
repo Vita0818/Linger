@@ -16,7 +16,8 @@ import (
 )
 
 const (
-	maxMessageLength         = 50000
+	// MaxMessageLength is the maximum length of a Room message body in runes.
+	MaxMessageLength         = 50000
 	maxHtmlFragmentBytes     = 2 << 20
 	maxHtmlFragmentStubRunes = 1024
 	maxMessageSegments       = 1000
@@ -202,7 +203,7 @@ func normalizeSegments(segments []Segment, validate func(Segment) error) (Conten
 		}
 		raw.WriteString(segment.Content)
 		messageLength += utf8.RuneCountInString(segment.Content)
-		if messageLength > maxMessageLength {
+		if messageLength > MaxMessageLength {
 			return Content{}, ErrInvalid
 		}
 	}
@@ -369,7 +370,7 @@ func normalizeAttachmentsWithLiveDocumentCards(
 }
 
 func validateSegment(segment Segment) error {
-	if segment.Content == "" || utf8.RuneCountInString(segment.Content) > maxMessageLength {
+	if segment.Content == "" || utf8.RuneCountInString(segment.Content) > MaxMessageLength {
 		return ErrInvalid
 	}
 	hasArtifactTreeMetadata := segment.PublicationGroupID != "" || segment.RootPath != "" ||
@@ -444,7 +445,7 @@ func validateFileRequestSegment(segment Segment) error {
 	if segment.Type != "file" {
 		return validateSegment(segment)
 	}
-	if segment.Content == "" || utf8.RuneCountInString(segment.Content) > maxMessageLength ||
+	if segment.Content == "" || utf8.RuneCountInString(segment.Content) > MaxMessageLength ||
 		!identifierPattern.MatchString(segment.DocumentID) || segment.DocumentVersionID != "" ||
 		segment.Filename != "" || segment.MediaType != "" ||
 		segment.Presentation != "" || segment.Target != "" || segment.TargetType != "" || segment.SkillID != "" ||
