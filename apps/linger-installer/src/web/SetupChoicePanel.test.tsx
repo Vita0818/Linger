@@ -9,7 +9,13 @@ import {
 } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { byokEndpoint, emptyByokDraft } from "./ByokPanel.js";
-import { SetupChoicePanel, type SetupReport } from "./SetupChoicePanel.js";
+import {
+  INKLING_2_MINI_ANNOUNCEMENT_URL,
+  INKLING_2_MINI_HF_URL,
+  SetupChoicePanel,
+  isInkling2MiniModelId,
+  type SetupReport,
+} from "./SetupChoicePanel.js";
 import { request } from "./api.js";
 vi.mock("./api.js", () => ({ request: vi.fn() }));
 afterEach(() => {
@@ -226,4 +232,109 @@ it("reports a listing failure in the status line and keeps the model box typeabl
   expect(status().getAttribute("data-tone")).toBe("err");
   fireEvent.change(combobox("Model"), { target: { value: "typed-model" } });
   expect(combobox("Model").value).toBe("typed-model");
+});
+
+it("renders the Inkling 2 Mini spotlight with safe external links and hardware context when not eligible", () => {
+  render(
+    <SetupChoicePanel
+      report={
+        {
+          ...report,
+          localModels: {
+            eligible: false,
+            estimate: { model: "" },
+          },
+        } as unknown as SetupReport
+      }
+      choice="codex"
+      onChange={() => {}}
+      onInstall={() => {}}
+      disabled={false}
+    />,
+  );
+  const spotlight = screen.getByRole("complementary", {
+    name: "Featured local model: Inkling 2 Mini",
+  });
+  expect(spotlight.getAttribute("data-ready")).toBe("false");
+  expect(spotlight.textContent).toContain("Featured · Thinking Machines");
+  expect(spotlight.textContent).toContain(
+    "Inkling 2 Mini — 26.4B looped MoE (3.4B active), native vision, built for local agentic coding (Apache 2.0).",
+  );
+  expect(spotlight.textContent).toContain(
+    "Runs on 16–24 GB GPUs and 32 GB+ Macs · Manage anytime in Settings → Models",
+  );
+
+  const announcement = screen.getByRole<HTMLAnchorElement>("link", {
+    name: "Thinking Machines",
+  });
+  expect(announcement.href).toBe(INKLING_2_MINI_ANNOUNCEMENT_URL);
+  expect(announcement.target).toBe("_blank");
+  expect(announcement.rel).toBe("noopener noreferrer");
+
+  const hf = screen.getByRole<HTMLAnchorElement>("link", {
+    name: "Hugging Face",
+  });
+  expect(hf.href).toBe(INKLING_2_MINI_HF_URL);
+  expect(hf.target).toBe("_blank");
+  expect(hf.rel).toBe("noopener noreferrer");
+});
+
+it("shows ready-to-run status when local models are eligible and badges recommended Inkling 2 Mini plans", () => {
+  const eligibleReport = {
+    ...report,
+    choices: ["local-models", "codex", "claude", "pi"],
+    recommendation: "local-models",
+    localModels: {
+      eligible: true,
+      estimate: {
+        model: "inkling-2-mini:Q4_K_M",
+        downloadBytes: 15 * 1024 ** 3,
+        diskBytes: 18 * 1024 ** 3,
+        memoryBytes: 22 * 1024 ** 3,
+      },
+    },
+  } as unknown as SetupReport;
+
+  const { rerender } = render(
+    <SetupChoicePanel
+      report={eligibleReport}
+      choice="codex"
+      onChange={() => {}}
+      onInstall={() => {}}
+      disabled={false}
+    />,
+  );
+  const spotlight = screen.getByRole("complementary", {
+    name: "Featured local model: Inkling 2 Mini",
+  });
+  expect(spotlight.getAttribute("data-ready")).toBe("true");
+  expect(spotlight.textContent).toContain(
+    "Ready to run locally on this computer · Switchable anytime in Settings → Models",
+  );
+  expect(
+    document.querySelector(".recommended-plan .featured-partner-tag"),
+  ).toBeNull();
+
+  rerender(
+    <SetupChoicePanel
+      report={eligibleReport}
+      choice="local-models"
+      onChange={() => {}}
+      onInstall={() => {}}
+      disabled={false}
+    />,
+  );
+  expect(
+    document.querySelector(".recommended-plan .featured-partner-tag")
+      ?.textContent,
+  ).toBe("Featured · Thinking Machines");
+});
+
+it("matches structured Inkling 2 Mini model IDs without matching unrelated models", () => {
+  expect(isInkling2MiniModelId("inkling-2-mini")).toBe(true);
+  expect(isInkling2MiniModelId("inkling-2-mini:Q4_K_M")).toBe(true);
+  expect(isInkling2MiniModelId("thinkingmachines/Inkling-2-Mini")).toBe(true);
+  expect(isInkling2MiniModelId("qwen3.8-27b:UD-Q4_K_M")).toBe(false);
+  expect(isInkling2MiniModelId("inkling-2-max")).toBe(false);
+  expect(isInkling2MiniModelId("")).toBe(false);
 });

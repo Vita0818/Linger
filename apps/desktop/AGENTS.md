@@ -363,6 +363,11 @@ Gateway and runs Agents. The daemon exits with the app.
   page's messages in the current language and the small runtime in
   `src/shell/messages.html` (`t`, `tSpans`, and `data-t` / `data-t-<attribute>`
   fill-in). Markup carries message names, never English or translated text.
+  The setup page stays sandboxed with `window.open` and navigation blocked;
+  external partner links (such as the Inkling 2 Mini spotlight in Welcome and
+  Customize) call `setup.run({ op: "external.open", url })`, which accepts only
+  the exact HTTPS URLs listed in `SETUP_EXTERNAL_URLS` (`src/shared/setup.ts`)
+  and opens them through `shell.openExternal`.
 - `src/i18n`: the shell's languages (English and Simplified Chinese) on the
   shared core `@linger/service-kit/messages`. `language.ts` matches a language
   and formats messages; `locales/zh-CN.json` is the shell's Chinese catalog,

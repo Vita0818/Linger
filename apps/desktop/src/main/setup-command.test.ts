@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import {
+  INKLING_2_MINI_ANNOUNCEMENT_URL,
+  SETUP_EXTERNAL_URLS,
+  isInkling2MiniModelId,
+} from "../shared/setup.js";
 import { parseSetupCommand } from "./setup-command.js";
 
 describe("parseSetupCommand", () => {
@@ -259,5 +264,61 @@ describe("parseSetupCommand", () => {
     expect(() =>
       parseSetupCommand({ op: "permission.request", id: "full-disk" }),
     ).toThrow();
+  });
+
+  it("accepts only exact allowlisted HTTPS URLs for external.open", () => {
+    for (const url of SETUP_EXTERNAL_URLS)
+      expect(parseSetupCommand({ op: "external.open", url })).toEqual({
+        op: "external.open",
+        url,
+      });
+
+    for (const url of [
+      "https://evil.example.com/",
+      "http://thinkingmachines.ai/news/inkling-2-mini/",
+      `${INKLING_2_MINI_ANNOUNCEMENT_URL}?ref=test`,
+      `${INKLING_2_MINI_ANNOUNCEMENT_URL}#top`,
+      `${INKLING_2_MINI_ANNOUNCEMENT_URL}extra`,
+      "javascript:alert(1)",
+      "file:///etc/passwd",
+      "",
+    ])
+      expect(() => parseSetupCommand({ op: "external.open", url })).toThrow();
+
+    expect(() => parseSetupCommand({ op: "external.open" })).toThrow();
+    expect(() =>
+      parseSetupCommand({
+        op: "external.open",
+        url: INKLING_2_MINI_ANNOUNCEMENT_URL,
+        extra: true,
+      }),
+    ).toThrow();
+  });
+});
+
+describe("isInkling2MiniModelId", () => {
+  it("matches structured Inkling 2 Mini model IDs and rejects other models", () => {
+    for (const id of [
+      "inkling-2-mini",
+      "inkling-2-mini:Q4_K_M",
+      "Inkling-2-Mini",
+      "thinkingmachines/Inkling-2-Mini",
+      "thinkingmachines/inkling-2-mini-iq4xs:UD-IQ4_XS",
+    ])
+      expect(isInkling2MiniModelId(id)).toBe(true);
+
+    for (const id of [
+      "qwen3.8-27b:UD-Q4_K_M",
+      "spark-x2.6-4b:Q4_K_M",
+      "inkling-2",
+      "inkling-2-max",
+      "inkling-2-minix",
+      "custom-inkling-2-mini",
+      "",
+      "   ",
+      undefined,
+      null,
+    ])
+      expect(isInkling2MiniModelId(id)).toBe(false);
   });
 });

@@ -26,6 +26,7 @@ import { offlineMessages } from "../shell/offline.messages.js";
 import setupHtml from "../shell/setup.html";
 import { setupMessages } from "../shell/setup.messages.js";
 import {
+  SETUP_EXTERNAL_URLS,
   SETUP_IPC,
   type SetupCommand,
   type SetupLocalAccount,
@@ -247,6 +248,12 @@ export class SetupWindowModule implements Module {
           throw new Error(this.#t(offlineMessages.invalidServer));
         await this.#refreshSignedIn();
         return;
+      case "external.open": {
+        const target = SETUP_EXTERNAL_URLS.find((url) => url === command.url);
+        if (!target) throw new Error("Not allowed");
+        await shell.openExternal(target);
+        return;
+      }
       case "local.start": {
         const local = ctx.get<LocalServerModule>("LocalServer");
         const plan = {

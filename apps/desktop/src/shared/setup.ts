@@ -272,8 +272,38 @@ export interface SetupState {
   >;
 }
 
+// Exact HTTPS URLs that the sandboxed setup page may ask the main process to
+// open in the system browser. Any other URL is rejected at the IPC boundary.
+export const SETUP_EXTERNAL_URLS = [
+  "https://thinkingmachines.ai/news/inkling-2-mini/",
+  "https://huggingface.co/thinkingmachines/Inkling-2-Mini",
+] as const;
+
+export type SetupExternalUrl = (typeof SETUP_EXTERNAL_URLS)[number];
+
+export const INKLING_2_MINI_ANNOUNCEMENT_URL: SetupExternalUrl =
+  "https://thinkingmachines.ai/news/inkling-2-mini/";
+
+// Matches Inkling 2 Mini by its structured localmodels model ID (for example
+// "inkling-2-mini", "inkling-2-mini:Q4_K_M", "thinkingmachines/Inkling-2-Mini").
+export function isInkling2MiniModelId(
+  modelId: string | null | undefined,
+): boolean {
+  if (typeof modelId !== "string") return false;
+  const trimmed = modelId.trim();
+  if (!trimmed) return false;
+  const withoutTag = trimmed.split(":", 1)[0] ?? "";
+  const slug = (
+    withoutTag.includes("/")
+      ? withoutTag.slice(withoutTag.lastIndexOf("/") + 1)
+      : withoutTag
+  ).toLowerCase();
+  return slug === "inkling-2-mini" || slug.startsWith("inkling-2-mini-");
+}
+
 export type SetupCommand =
   | { readonly op: "server.set"; readonly serverUrl: string }
+  | { readonly op: "external.open"; readonly url: SetupExternalUrl }
   | {
       readonly op: "local.start";
       readonly runtime?: SetupLocalRuntime;
