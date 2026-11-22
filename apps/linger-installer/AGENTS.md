@@ -37,13 +37,7 @@ installed without extension support included) gets its approved plan applied
 again when the saved plan inputs still match the current choices; only a
 plan the person approved is ever applied, and a stack still not ready ends
 `LOCAL_MODELS_RECOVERY_REQUIRED` with the binding's reason codes in
-`details.reasons`. When the services already run, a local-models setup
-whose Computer still uses the local model source (`model-source.json` says
-`local` or does not exist yet) has its stack checked once
-(`restoreLocalModels`), since a quit stops the models but not the services: a
-stack that is not ready gets the same restore, then becomes the model source
-again. A source switched to a subscription or BYOK leaves the stack stopped.
-A failed job's `errorCode` is the runtime's cause when it
+`details.reasons`. A failed job's `errorCode` is the runtime's cause when it
 has one (`RUNTIME_PLAN_REFUSED`, a harness plan refused before anything
 changed, such as an unusable `SIMPLEX_PI_PATH` or a Windows runtime root too
 long for Pi without long paths; `RUNTIME_ACTION_FAILED`;
@@ -65,9 +59,7 @@ gateway (`stopLocalmodels`).
 location `desktop/local-server.json` names, it unloads the model library's
 loaded models and stops the stack with the gateway the localmodels tool
 started, and keeps the services and the model controller running. It
-holds each home's local model lock (`withLocalModelsLock`) while it stops,
-so the next launch's restore waits for it; a home whose lock a deployment
-holds is skipped with a log line. It prints one JSON line with what failed.
+prints one JSON line with what failed.
 
 Every other mode first converts an install from before the rename to Linger
 (`migrateLegacyInstallation`); `--migrate` does only that and exits, for the

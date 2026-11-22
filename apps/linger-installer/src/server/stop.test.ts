@@ -3,9 +3,6 @@ import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 
-import { INSTANCE_BUSY } from "@linger/local-installation/instance";
-import { withLocalModelsLock } from "@linger/local-installation/local-models";
-
 import { parseInstallerArguments } from "../main.js";
 import { launchInstaller } from "./launch.js";
 import { privateDirectory, privateWrite } from "./storage.js";
@@ -270,36 +267,4 @@ test("a quit stops only the local models, in every home, and keeps their control
       message: "localmodels library unload qwen3-8b:Q4_K_M: JOB_RUNNING",
     },
   ]);
-});
-
-test("a quit holds each home's local model lock while it stops the models", async () => {
-  const value = await home();
-  await mkdir(path.join(value, "runtime/localmodels"), { recursive: true });
-  let held: unknown;
-  const outcome = await stopDesktopLocalModels(options(value), {
-    stopModels: async (at) => {
-      // A restore checking the stack now finds the lock taken.
-      held = await withLocalModelsLock(at, async () => "free").catch(
-        (error: { code?: unknown }) => error.code,
-      );
-    },
-  });
-  expect(held).toBe(INSTANCE_BUSY);
-  expect(outcome.failed).toEqual([]);
-});
-
-test("a quit while a deployment holds the lock leaves that home's models running", async () => {
-  const value = await home();
-  await mkdir(path.join(value, "runtime/localmodels"), { recursive: true });
-  const stopModels = vi.fn(async () => {});
-  const log: string[] = [];
-  const outcome = await withLocalModelsLock(value, () =>
-    stopDesktopLocalModels(
-      { ...options(value), log: (message) => log.push(message) },
-      { stopModels },
-    ),
-  );
-  expect(stopModels).not.toHaveBeenCalled();
-  expect(outcome.failed).toEqual([]);
-  expect(log.join("\n")).toContain("another local model operation holds them");
 });

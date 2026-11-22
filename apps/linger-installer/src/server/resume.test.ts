@@ -54,62 +54,9 @@ test("leaves running services alone", async () => {
       load: async () => instance,
       engines: native(run, true),
       pending: async () => false,
-      restore: async () => undefined,
     }),
   ).toMatchObject({ code: 0, details: { origin: instance.origin } });
   expect(run).not.toHaveBeenCalled();
-});
-
-test("brings the local models back while the services keep running", async () => {
-  const run = vi.fn();
-  const restore = vi.fn(async () => undefined);
-  expect(
-    await resumeSourceInstance(options, {
-      load: async () => instance,
-      engines: native(run, true),
-      pending: async () => false,
-      restore,
-    }),
-  ).toMatchObject({ code: 0, state: "ready" });
-  expect(restore).toHaveBeenCalledWith(
-    instance,
-    expect.objectContaining({ signal: options.signal }),
-  );
-  expect(run).not.toHaveBeenCalled();
-});
-
-test("reports a local model restore that failed", async () => {
-  const failed = {
-    code: 4,
-    state: "action_required" as const,
-    message: "The local model stack is not ready.",
-    details: { code: "LOCAL_MODELS_RECOVERY_REQUIRED" },
-  };
-  expect(
-    await resumeSourceInstance(options, {
-      load: async () => instance,
-      engines: native(vi.fn(), true),
-      pending: async () => false,
-      restore: async () => failed,
-    }),
-  ).toEqual(failed);
-});
-
-test("leaves the local models to a full start", async () => {
-  const restore = vi.fn(async () => undefined);
-  await resumeSourceInstance(options, {
-    load: async () => instance,
-    engines: native(
-      vi.fn<ResumeEngine["run"]>(async () => ({
-        code: 0,
-        state: "ready",
-        message: "ok",
-      })),
-      false,
-    ),
-    restore,
-  });
-  expect(restore).not.toHaveBeenCalled();
 });
 
 test("restarts running services for a changed user.env", async () => {
@@ -150,7 +97,6 @@ test("reports the source the services serve from", async () => {
       load: async () => instance,
       engines: native(vi.fn(), true),
       pending: async () => false,
-      restore: async () => undefined,
     }),
   ).toMatchObject({ code: 0, details: { source: "/source" } });
   // The instance names a new checkout only once its services became ready

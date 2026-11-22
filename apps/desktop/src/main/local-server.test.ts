@@ -76,9 +76,10 @@ if (args.includes("--user-keys")) {
   process.stdout.write(JSON.stringify({ saved: names }) + "\n");
   process.exit(0);
 }
-if (args.includes("--stop-local-models")) {
-  // The quit's stop of the local models; its output goes to a log file.
-  fs.writeFileSync(path.join(home, "stop-local-models.json"), JSON.stringify({ args, runAsNode: process.env.ELECTRON_RUN_AS_NODE }));
+if (args.some((arg) => arg.startsWith("--stop"))) {
+  // The app never stops the services or the local models; this records a
+  // stop if it ever ran one.
+  fs.writeFileSync(path.join(home, "stopped.json"), JSON.stringify({ args }));
   process.stdout.write(JSON.stringify({ failed: [] }) + "\n");
   process.exit(0);
 }
@@ -2388,38 +2389,18 @@ describe("LocalServerModule after a restart", () => {
     await f.host.stop("quit");
   });
 
-  it("stops the local models when the person quits, without waiting for them", async () => {
-    const stopped = (home: string) => path.join(home, "stop-local-models.json");
-    const f = fixture({}, enrolled, record);
-    await f.host.start();
-    await vi.waitFor(() => expect(f.module.status().phase).toBe("ready"));
-    await f.host.stop("quit");
-    // It runs on after the app is gone; its outcome goes to the log.
-    await vi.waitFor(() =>
-      expect(
-        readFileSync(
-          path.join(f.home, "installer", "local-models-stop.log"),
-          "utf8",
-        ),
-      ).toBe('{"failed":[]}\n'),
-    );
-    expect(JSON.parse(readFileSync(stopped(f.home), "utf8"))).toEqual({
-      args: ["--home", f.home, "--stop-local-models"],
-      runAsNode: "1",
-    });
-  });
-
-  it("leaves the local models running for an update, and stops none without an installation", async () => {
+  it("leaves the services and the local models running on a quit or an update", async () => {
+    const quit = fixture({}, enrolled, record);
+    await quit.host.start();
+    await vi.waitFor(() => expect(quit.module.status().phase).toBe("ready"));
+    await quit.host.stop("quit");
     const update = fixture({}, enrolled, record);
     await update.host.start();
     await vi.waitFor(() => expect(update.module.status().phase).toBe("ready"));
     await update.host.stop("update");
-    const none = fixture();
-    await none.host.start();
-    await none.host.stop("quit");
     await delay(300);
-    for (const home of [update.home, none.home])
-      expect(existsSync(path.join(home, "stop-local-models.json"))).toBe(false);
+    for (const home of [quit.home, update.home])
+      expect(existsSync(path.join(home, "stopped.json"))).toBe(false);
   });
 
   it("moves the keys of the unpacked source's .env into the instance's user.env once", async () => {

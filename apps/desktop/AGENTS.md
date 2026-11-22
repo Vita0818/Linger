@@ -374,9 +374,7 @@ home> --stop-local-models` under `ELECTRON_RUN_AS_NODE`, detached, with
   its output in `<home>/installer/local-models-stop.log`, and does not wait
   for it. It runs only when `desktop/local-server.json` names an
   installation. The Computer exits with the app, so nothing uses the models
-  until the next launch, whose resume applies the approved plan again even
-  though the services still run, unless the person switched the Computer's
-  model source to a subscription or BYOK. A
+  until the next launch, whose resume applies the approved plan again. A
   quit for an update or a relaunch, and the `--quit` of setup or the
   uninstaller (which stop the models themselves right after), leave them.
 - `src/main/legacy-migration.ts`: on start, stops a bridge an older version

@@ -2,7 +2,6 @@ import { realpath } from "node:fs/promises";
 import path from "node:path";
 
 import { loadInstance } from "@linger/local-installation/instance";
-import { restoreLocalModels } from "@linger/local-installation/local-models";
 import { userEnvironmentPending } from "@linger/local-installation/user-environment";
 import type { InstallOutcome } from "@linger/local-installation/events";
 import {
@@ -50,7 +49,6 @@ export async function resumeSourceInstance(
     load = loadInstance,
     engines = ENGINES,
     pending = userEnvironmentPending,
-    restore = restoreLocalModels,
   } = {},
 ): Promise<InstallOutcome> {
   const instance = await load({
@@ -77,23 +75,13 @@ export async function resumeSourceInstance(
       (check) => check.ready,
     ) &&
     !(await pending(instance))
-  ) {
-    // A quit stops the local models but leaves the services running, so
-    // they come back here rather than with the services.
-    const restored = await restore(instance, {
-      signal: options.signal,
-      onEvent: (event) => {
-        if (event.message) options.log(event.message);
-      },
-    });
-    if (restored) return restored;
+  )
     return {
       code: 0,
       state: "ready",
       message: "Services are already running.",
       details: { origin: instance.origin, source: instance.source.repo },
     };
-  }
   const outcome = await engine.run({
     name: instance.name,
     home: options.home,

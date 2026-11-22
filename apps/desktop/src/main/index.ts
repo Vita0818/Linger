@@ -326,14 +326,10 @@ async function main(): Promise<void> {
   const host = new ModuleHost(modules, { config, log, bus: new EventBus() });
 
   const showApp = (): void => setup.showApp();
-  // The uninstaller, or setup replacing this release, asked to quit.
-  let replacing = false;
   app.on("second-instance", (_event, argv) => {
     // Without asking: the uninstaller is removing the app.
-    if (quitRequested(argv)) {
-      replacing = true;
-      app.quit();
-    } else showApp();
+    if (quitRequested(argv)) app.quit();
+    else showApp();
   });
   app.on("activate", showApp);
   // Closing the window only hides it; the tray keeps the app running.
@@ -344,14 +340,10 @@ async function main(): Promise<void> {
     if (quitting) return;
     quitting = true;
     event.preventDefault();
-    // Setup and the uninstaller stop the services and the local models
-    // themselves right after --quit; a stop from here would race theirs.
-    void host
-      .stop(relaunch || updating || replacing ? "update" : "quit")
-      .finally(() => {
-        if (relaunch) app.relaunch();
-        app.exit(0);
-      });
+    void host.stop(relaunch || updating ? "update" : "quit").finally(() => {
+      if (relaunch) app.relaunch();
+      app.exit(0);
+    });
   });
 
   // Tasks run in the app, so quitting takes the computer offline; ask first

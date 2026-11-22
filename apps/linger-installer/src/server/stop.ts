@@ -1,11 +1,7 @@
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import {
-  INSTANCE_BUSY,
-  loadInstance,
-} from "@linger/local-installation/instance";
-import { withLocalModelsLock } from "@linger/local-installation/local-models";
+import { loadInstance } from "@linger/local-installation/instance";
 import { stopLocalmodels } from "@linger/local-installation/localmodels-tool";
 import { stopNativeSource } from "@linger/local-installation/native-source";
 
@@ -78,8 +74,7 @@ export async function stopDesktopInstallation(
  * loaded models and the stack with the gateway the localmodels tool started,
  * in every home the desktop installed to. The services and the model
  * controller keep running, as the services do after a quit; the next launch
- * brings the approved stack up again. Each home's stop holds that home's
- * local model lock; a home whose lock another operation holds is skipped.
+ * brings the approved stack up again.
  */
 export async function stopDesktopLocalModels(
   options: Pick<StopOptions, "home" | "signal" | "log">,
@@ -87,30 +82,13 @@ export async function stopDesktopLocalModels(
 ): Promise<StopOutcome> {
   const { failed, attempt } = attempts(options.log);
   for (const home of await installationHomes(options.home))
-    await attempt(home, async () => {
-      const stop = () =>
-        stopModels(home, {
-          signal: options.signal,
-          log: options.log,
-          keepController: true,
-        });
-      // Nothing ran localmodels in a home without its folder, and the lock
-      // would create one there.
-      if (!(await exists(path.join(home, "runtime", "localmodels"))))
-        return stop();
-      // The next launch's restore waits on this lock, so it never checks a
-      // stack this stop is about to take down.
-      try {
-        await withLocalModelsLock(home, stop);
-      } catch (error) {
-        if ((error as { code?: unknown }).code !== INSTANCE_BUSY) throw error;
-        // A deployment holds the stack; stopping it now would break that
-        // apply, and the next launch restores the stack's approved state.
-        options.log(
-          `Left the local models in ${home} running: another local model operation holds them.`,
-        );
-      }
-    });
+    await attempt(home, () =>
+      stopModels(home, {
+        signal: options.signal,
+        log: options.log,
+        keepController: true,
+      }),
+    );
   return { failed };
 }
 
