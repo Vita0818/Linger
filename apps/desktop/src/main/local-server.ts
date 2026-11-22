@@ -53,6 +53,7 @@ import {
   NATIVE_RUNTIME_DIRECTORY,
   readNativeRuntime,
 } from "@linger/local-installation/native-runtime";
+import { linuxNodeFdHygieneArgs } from "@linger/local-installation/native-process-fds";
 import {
   installTeamhubBinaries,
   TEAMHUB_BINARY_DIRECTORY,
@@ -133,18 +134,20 @@ export type LocalModelsCheck =
       readonly state: "checked";
       // Whether this computer can serve a local model now.
       readonly eligible: boolean;
-      // The model fits this computer's hardware, but other programs hold
-      // memory it needs now: the tool's state "blocked-now". The install
-      // would plan again against the memory free then, so it is not offered
-      // until a new check finds that memory.
+      // A temporary blocker prevents installing right now (the tool's state
+      // "blocked-now", such as memory held by other programs, gateway port in
+      // use, or harness unavailable); shown on hold until a new check clears
+      // it.
       readonly blockedNow?: true;
+      // Upstream stack.hardwareCapable, when reported by the tool.
+      readonly hardwareCapable?: boolean;
       // While blocked now: the memory free now and what the plan needs, as
       // the tool counts them (VRAM only for a discrete GPU).
       readonly freeMemory?: SetupMemory;
       readonly memoryBytes: number;
       readonly diskFreeBytes: number | null;
       readonly gpu?: string;
-      // Present when eligible or when it needs free memory.
+      // Present when eligible or when a blocked-now report included a plan.
       readonly model?: LocalModel;
       // The localmodels tool's code for why not, or, when eligible, for
       // what could still stop the install, with the counts it carries.
@@ -465,6 +468,7 @@ export class LocalServerModule implements Module {
   #attempt = 0;
   #origin: string | undefined;
   #resuming = false;
+  #started = false;
   #running: Promise<void> | undefined;
   #check: LocalModelsCheck = { state: "unchecked" };
   #checkedAt: number | undefined;
@@ -530,7 +534,11 @@ export class LocalServerModule implements Module {
     if (record) this.#home = record.home;
     const config = ctx.config.get();
     const resumes =
-      !!record && config.serverUrl === record.origin && !!config.computerId;
+      !!record &&
+      config.serverUrl !== undefined &&
+      sameOrigin(config.serverUrl, record.origin) &&
+      !!config.computerId;
+    this.#started = true;
     if (migrationFailure) {
       // Resume would fail on the legacy record with a less useful error;
       // Retry resumes, and the installer migrates again first.
@@ -550,9 +558,14 @@ export class LocalServerModule implements Module {
       this.#daemonConnection = undefined;
     });
     this.#offRetry = ctx.bus.on("local-server.retry", () => {
-      if (this.#phase === "failed" && record) {
-        void this.#resume(record, this.#abort.signal);
-      }
+      if (this.#phase !== "failed") return;
+      void this.#readRecord().then((latest) => {
+        const target = latest ?? record;
+        if (target && this.#phase === "failed") {
+          record = target;
+          void this.#resume(target, this.#abort.signal);
+        }
+      });
     });
     this.#offReset = ctx.bus.on("local-server.reset", () => {
       record = undefined;
@@ -603,6 +616,7 @@ export class LocalServerModule implements Module {
       const child = spawn(
         process.execPath,
         [
+          ...linuxNodeFdHygieneArgs(this.#options.platform),
           this.#installerScript(),
           "--home",
           this.#options.home,
@@ -635,6 +649,18 @@ export class LocalServerModule implements Module {
       return true;
     const record = await this.#readRecord();
     return record !== undefined && sameOrigin(record.origin, serverUrl);
+  }
+
+  // Whether the window should show "Starting Linger" instead of the retrying
+  // offline page when `serverUrl` fails to load. True while a resume is active
+  // for this origin, or during initial boot before LocalServer.start() begins
+  // the resume; false once resume has settled so a later transient failure
+  // never traps the window on the non-retrying Starting page.
+  async isStarting(serverUrl: string): Promise<boolean> {
+    if (this.#resuming)
+      return this.#origin !== undefined && sameOrigin(this.#origin, serverUrl);
+    if (!this.#started) return this.resumable(serverUrl);
+    return false;
   }
 
   status(): LocalServerStatus {
@@ -742,7 +768,12 @@ export class LocalServerModule implements Module {
             ms: Date.now() - started,
             eligible: check.state === "checked" && check.eligible,
             ...(check.state === "checked" && check.blockedNow
-              ? { blocked_now: true, free_memory: check.freeMemory }
+              ? {
+                  blocked_now: true,
+                  ...(check.freeMemory
+                    ? { free_memory: check.freeMemory }
+                    : {}),
+                }
               : {}),
             ...(check.state === "checked" && check.recommendation
               ? { recommendation: check.recommendation }
@@ -858,7 +889,13 @@ export class LocalServerModule implements Module {
       const output = await new Promise<string>((resolve, reject) => {
         const child = spawn(
           process.execPath,
-          [this.#installerScript(), "--home", home, flag],
+          [
+            ...linuxNodeFdHygieneArgs(this.#options.platform),
+            this.#installerScript(),
+            "--home",
+            home,
+            flag,
+          ],
           {
             stdio: ["pipe", "pipe", "pipe"],
             windowsHide: true,
@@ -905,6 +942,7 @@ export class LocalServerModule implements Module {
       const child = spawn(
         process.execPath,
         [
+          ...linuxNodeFdHygieneArgs(this.#options.platform),
           this.#installerScript(),
           "--home",
           this.#options.home,
@@ -961,6 +999,7 @@ export class LocalServerModule implements Module {
       localModels?: {
         eligible?: unknown;
         state?: unknown;
+        hardwareCapable?: unknown;
         memory?: Record<string, unknown>;
         reasons?: unknown;
         estimate?: {
@@ -990,9 +1029,13 @@ export class LocalServerModule implements Module {
       typeof estimate?.model === "string" && estimate.model
         ? estimate.model
         : undefined;
-    // Offered only with a model to show; the plan names it. A plan blocked
-    // now cannot install until other programs free memory.
-    const blockedNow = !!name && report.localModels.state === "blocked-now";
+    // A blocked-now report holds local models even when no plan could be built
+    // yet (for example gateway-port-in-use or harness-unavailable).
+    const blockedNow = report.localModels.state === "blocked-now";
+    const hardwareCapable =
+      typeof report.localModels.hardwareCapable === "boolean"
+        ? report.localModels.hardwareCapable
+        : undefined;
     const eligible = report.localModels.eligible && !!name && !blockedNow;
     const memory = report.localModels.memory;
     const freeMemory: SetupMemory | undefined =
@@ -1063,6 +1106,7 @@ export class LocalServerModule implements Module {
           : null,
       ...(typeof gpu === "string" ? { gpu } : {}),
       ...(blockedNow ? { blockedNow } : {}),
+      ...(hardwareCapable !== undefined ? { hardwareCapable } : {}),
       ...(freeMemory ? { freeMemory } : {}),
       ...((eligible || blockedNow) && name
         ? {
@@ -1694,7 +1738,13 @@ export class LocalServerModule implements Module {
     const outcome = await new Promise<LegacyMigrationRun>((resolve) => {
       const child = spawn(
         process.execPath,
-        [this.#installerScript(), "--home", home, "--migrate"],
+        [
+          ...linuxNodeFdHygieneArgs(this.#options.platform),
+          this.#installerScript(),
+          "--home",
+          home,
+          "--migrate",
+        ],
         {
           stdio: ["ignore", "pipe", "pipe"],
           windowsHide: true,
@@ -2288,6 +2338,7 @@ export class LocalServerModule implements Module {
       const child = spawn(
         node,
         [
+          ...linuxNodeFdHygieneArgs(this.#options.platform),
           this.#installerScript(),
           "--home",
           home,
@@ -2340,6 +2391,7 @@ export class LocalServerModule implements Module {
     const child = spawn(
       node,
       [
+        ...linuxNodeFdHygieneArgs(this.#options.platform),
         this.#installerScript(),
         "--home",
         home,
@@ -2546,6 +2598,7 @@ export class LocalServerModule implements Module {
   // services move to it first: the window and the Computer already are this
   // version, and the older services would serve the older interface.
   async #resume(record: LocalRecord, signal: AbortSignal): Promise<void> {
+    let currentRecord = record;
     this.#origin = record.origin;
     this.#resuming = true;
     const startedAt = Date.now();
@@ -2553,7 +2606,7 @@ export class LocalServerModule implements Module {
     this.#ctx?.log.info("local_server.resume_started");
     const windows = this.#ctx?.get<WindowManagerModule>("WindowManager");
     try {
-      const update = this.#sourceUpdate(record);
+      const update = this.#sourceUpdate(currentRecord);
       if (update) {
         // The services restart even if they still answer.
         this.#preparing = "updating";
@@ -2564,7 +2617,29 @@ export class LocalServerModule implements Module {
         this.#set("preparing", "Starting Linger on this computer…");
         // The window would show the server as unreachable until it is back.
         const checkStartedAt = Date.now();
-        const reachable = await this.#reachable(record.origin);
+        let reachable = await this.#reachable(currentRecord.origin);
+        if (!reachable) {
+          // If an earlier restart moved the instance onto a new port before
+          // desktop state caught up, follow the live origin right away instead
+          // of showing Starting with the stale port.
+          const moved = await this.#readInstanceOrigin(currentRecord.home);
+          if (
+            moved &&
+            !sameOrigin(moved, currentRecord.origin) &&
+            (await this.#reachable(moved)) &&
+            (await this.#checkServer({ ...currentRecord, origin: moved }))
+          ) {
+            const previous = currentRecord.origin;
+            currentRecord = { ...currentRecord, origin: moved };
+            await this.#writeRecord(currentRecord);
+            this.#ctx?.log.info("local_server.origin_moved", {
+              from: previous,
+              to: moved,
+            });
+            this.#ready(moved, previous, "port_moved");
+            reachable = true;
+          }
+        }
         this.#ctx?.log.info("local_server.resume_stage", {
           stage: "fast_ready_check",
           ms: Date.now() - checkStartedAt,
@@ -2578,21 +2653,29 @@ export class LocalServerModule implements Module {
         this.#options.sourceArchive &&
         !this.#options.checkout &&
         (update ||
-          !(await validateSourceRepository(record.repo).then(
+          !(await validateSourceRepository(currentRecord.repo).then(
             () => true,
             () => false,
           )))
-          ? await this.#ensureSource(record.home, signal)
-          : record.repo;
-      const serving = await this.#runResume(record, repo, signal, (next) => {
-        stage = next;
-      });
+          ? await this.#ensureSource(currentRecord.home, signal)
+          : currentRecord.repo;
+      const serving = await this.#runResume(
+        currentRecord,
+        repo,
+        signal,
+        (next) => {
+          stage = next;
+        },
+      );
       // The installer moves the web port off one another program took. The
       // record and the window follow the origin together (a launch resumes
       // only while they agree), and so does this computer's enrollment: it
       // is the same server.
-      const origin = serving.origin ?? record.origin;
-      if (repo !== record.repo) {
+      const origin =
+        serving.origin ??
+        (await this.#readInstanceOrigin(currentRecord.home)) ??
+        currentRecord.origin;
+      if (repo !== currentRecord.repo) {
         // The record moves, and the older folder goes, only once the
         // services run from the new one and answer; until then the older
         // services keep running from their folder, and Retry moves them.
@@ -2603,20 +2686,20 @@ export class LocalServerModule implements Module {
           throw new Error(
             "Linger could not restart on this version. The earlier version is still installed; try again.",
           );
-        await this.#moved({ ...record, origin }, repo);
-      } else if (origin !== record.origin)
-        await this.#writeRecord({ ...record, origin });
-      if (origin !== record.origin)
+        await this.#moved({ ...currentRecord, origin }, repo);
+      } else if (origin !== currentRecord.origin)
+        await this.#writeRecord({ ...currentRecord, origin });
+      if (origin !== currentRecord.origin)
         this.#ctx?.log.info("local_server.origin_moved", {
-          from: record.origin,
+          from: currentRecord.origin,
           to: origin,
         });
       if (update)
         this.#ctx?.log.info("local_server.source_updated", {
           source: path.basename(repo),
-          from: record.version,
+          from: currentRecord.version,
         });
-      this.#ready(origin, record.origin, "resume_ready");
+      this.#ready(origin, currentRecord.origin, "resume_ready");
       this.#set("ready", "Linger is running on this computer.");
       this.#ctx?.log.info("local_server.resume_succeeded", {
         total_ms: Date.now() - startedAt,
@@ -2718,6 +2801,7 @@ export class LocalServerModule implements Module {
       const child = spawn(
         node,
         [
+          ...linuxNodeFdHygieneArgs(this.#options.platform),
           this.#installerScript(),
           "--home",
           record.home,
@@ -2738,17 +2822,54 @@ export class LocalServerModule implements Module {
         },
       );
       let output = "";
+      let settled = false;
+      let exited = false;
+      let exitedCode: number | null = null;
+      let drainTimer: NodeJS.Timeout | undefined;
+      const finish = (code: number | null, destroyStdout = false) => {
+        if (settled) return;
+        settled = true;
+        if (drainTimer) {
+          clearTimeout(drainTimer);
+          drainTimer = undefined;
+        }
+        if (destroyStdout) child.stdout.destroy();
+        const parsed = parseResumeOutcome(output);
+        if (parsed) resolve(parsed);
+        else reject(new Error(`The installer exited with code ${code}`));
+      };
       child.stdout.on("data", (chunk: Buffer) => {
         output += chunk.toString("utf8");
+        if (exited && !settled && parseResumeOutcome(output, true))
+          finish(exitedCode, true);
       });
-      child.once("error", reject);
-      child.once("close", (code) => {
-        try {
-          const last = output.trim().split("\n").at(-1) ?? "";
-          resolve(JSON.parse(last) as ResumeOutcome);
-        } catch {
-          reject(new Error(`The installer exited with code ${code}`));
+      child.once("error", (error) => {
+        if (settled) return;
+        settled = true;
+        if (drainTimer) {
+          clearTimeout(drainTimer);
+          drainTimer = undefined;
         }
+        child.stdout.destroy();
+        reject(error);
+      });
+      child.once("close", (code) => finish(code));
+      // Detached native services spawned during --resume can inherit the
+      // stdout pipe handle on Windows and keep "close" from firing after the
+      // installer already flushed its outcome JSON and exited. Settle at once
+      // when a complete outcome line is already buffered; otherwise wait for
+      // trailing pipe chunks or end up to a short safety cap.
+      child.once("exit", (code) => {
+        if (settled) return;
+        exited = true;
+        exitedCode = code;
+        if (parseResumeOutcome(output, true)) {
+          finish(code, true);
+          return;
+        }
+        child.stdout.once("end", () => finish(code));
+        drainTimer = setTimeout(() => finish(code, true), 1_000);
+        drainTimer.unref?.();
       });
     });
     this.#ctx?.log.info("local_server.resume_stage", {
@@ -2866,6 +2987,24 @@ export class LocalServerModule implements Module {
     ctx.bus.emit("computer.runtime");
   }
 
+  // Reads the desktop instance's current origin from instance.json, where the
+  // installer persists port moves as soon as a taken port is reassigned.
+  async #readInstanceOrigin(home: string): Promise<string | undefined> {
+    try {
+      const parsed = JSON.parse(
+        await readFile(
+          path.join(home, "instances", LOCAL_INSTANCE, "instance.json"),
+          "utf8",
+        ),
+      ) as { origin?: unknown };
+      return typeof parsed.origin === "string"
+        ? parseServerUrl(parsed.origin)
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   // Kept in the default home, wherever the installation went.
   #recordFile(): string {
     return this.#desktopDirectory("local-server.json");
@@ -2958,6 +3097,40 @@ interface ResumeOutcome {
     localModelsDegraded?: unknown;
   };
   runtime?: InstanceRuntime;
+}
+
+function parseResumeOutcomeLine(line: string): ResumeOutcome | undefined {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("{")) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      typeof (parsed as { code?: unknown }).code === "number" &&
+      Number.isFinite((parsed as { code: number }).code)
+    )
+      return parsed as ResumeOutcome;
+  } catch {
+    // Ignore non-JSON lines from installer logs or detached grandchildren.
+  }
+  return undefined;
+}
+
+// Scans stdout lines in reverse for the last valid ResumeOutcome JSON object so
+// trailing non-JSON log lines from detached grandchildren never break parsing.
+function parseResumeOutcome(
+  output: string,
+  requireNewline = false,
+): ResumeOutcome | undefined {
+  const lines = output.split("\n");
+  const end = requireNewline ? lines.length - 1 : lines.length;
+  for (let index = end - 1; index >= 0; index--) {
+    const outcome = parseResumeOutcomeLine(lines[index]!);
+    if (outcome) return outcome;
+  }
+  return undefined;
 }
 
 interface LocalRecord {
@@ -3189,6 +3362,27 @@ function localModelNotReadyMessage(reasons: unknown): string | undefined {
   return code ? LOCAL_MODEL_NOT_READY[code] : undefined;
 }
 
+// Formats a failed local-model installer job into user-facing guidance based
+// on its structured error code and reason codes so setup, apply, or Pi/state
+// verification failures report a repairable issue rather than hardware
+// incompatibility.
+export function formatLocalModelJobFailure(
+  errorCode: string | undefined,
+  message: string | undefined,
+  errorReasons?: readonly string[],
+): string {
+  const detail = message?.trim().replace(/(?<!\.)\.{2}(\s|$)/g, ".$1");
+  const suffix = detail ? ` (${detail})` : "";
+  const notReady = localModelNotReadyMessage(errorReasons);
+  if (errorCode === "LOCAL_MODELS_UNAVAILABLE")
+    return `This computer can't run the local model right now. Close other programs to free memory, or choose another AI runtime, and try again.${suffix}`;
+  if (errorCode === "LOCAL_MODELS_RECOVERY_REQUIRED")
+    return `${notReady ? `${notReady} ` : ""}Local model setup couldn't finish or verify this computer's local model state and Pi configuration. Check folder permissions or repair the existing installation and try again, or choose another AI runtime.${!notReady && detail ? suffix : ""}`;
+  if (LOCAL_MODEL_FAILURES.has(errorCode ?? ""))
+    return `${notReady ? `${notReady} ` : ""}This computer can't run the local model right now. Choose another AI runtime and try again.${!notReady && detail ? suffix : ""}`;
+  return detail || "The installation stopped";
+}
+
 export interface Reconnect {
   readonly windowMs: number;
   readonly maxBackoffMs: number;
@@ -3415,18 +3609,14 @@ export class InstallerApi {
         );
         continue;
       }
-      if (!["queued", "running"].includes(job.state)) {
-        const notReady = localModelNotReadyMessage(job.errorReasons);
+      if (!["queued", "running"].includes(job.state))
         throw new Error(
-          // Only the planner finding no model that fits can be helped by
-          // freeing memory; free memory is what it measures at that moment.
-          job.errorCode === "LOCAL_MODELS_UNAVAILABLE"
-            ? `This computer can't run the local model right now. Close other programs to free memory, or choose another AI runtime, and try again.${job.message ? ` (${job.message})` : ""}`
-            : LOCAL_MODEL_FAILURES.has(job.errorCode ?? "")
-              ? `${notReady ? `${notReady} ` : ""}This computer can't run the local model right now. Choose another AI runtime and try again.${!notReady && job.message ? ` (${job.message})` : ""}`
-              : job.message || "The installation stopped",
+          formatLocalModelJobFailure(
+            job.errorCode,
+            job.message,
+            job.errorReasons,
+          ),
         );
-      }
       await delay(this.#pollMs, undefined, { signal });
       job = await this.#poll(job.id, signal, () => {
         if (shown) onStep(shown[0], shown[1], "Reconnecting to the installer…");
