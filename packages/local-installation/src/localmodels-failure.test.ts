@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import {
+  formatLocalmodelsFailureMessage,
   localmodelsFailure,
   redactLocalmodelsOutput,
 } from "./localmodels-failure.js";
@@ -235,4 +236,43 @@ it("turns a pretty-printed localmodels.stack-up/v1 failure report into a redacte
   expect(failure.cause).toContain("spark-x2.6-1.7b-18100:");
   expect(failure.cause).not.toContain("sk-ant-0123456789abcdefghij");
   expect(failure.cause).not.toContain('"schema"');
+});
+
+it("joins failure messages with single terminal punctuation and redacts secrets", () => {
+  expect(
+    formatLocalmodelsFailureMessage(
+      "The upstream tool could not verify the local stack binding",
+      "Pi's configuration or this computer's state cannot be read safely. Restore the existing install and try again.",
+      "Existing resources were preserved.",
+    ),
+  ).toBe(
+    "The upstream tool could not verify the local stack binding: Pi's configuration or this computer's state cannot be read safely. Restore the existing install and try again. Existing resources were preserved.",
+  );
+  expect(
+    formatLocalmodelsFailureMessage(
+      "The upstream tool could not verify the local stack binding.",
+      "upstream text",
+      "Existing resources were preserved.",
+    ),
+  ).toBe(
+    "The upstream tool could not verify the local stack binding: upstream text. Existing resources were preserved.",
+  );
+  expect(
+    formatLocalmodelsFailureMessage(
+      "The upstream tool could not verify the local stack binding",
+      undefined,
+      "Existing resources were preserved.",
+    ),
+  ).toBe(
+    "The upstream tool could not verify the local stack binding. Existing resources were preserved.",
+  );
+  expect(
+    formatLocalmodelsFailureMessage(
+      "The upstream tool could not verify the local stack binding",
+      "Restore the existing install and try again.. Bearer secret-token-123",
+      "Existing resources were preserved.",
+    ),
+  ).toBe(
+    "The upstream tool could not verify the local stack binding: Restore the existing install and try again. Bearer [REDACTED]. Existing resources were preserved.",
+  );
 });

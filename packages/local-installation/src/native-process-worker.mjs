@@ -4,11 +4,23 @@ import { constants, closeSync, writeSync } from "node:fs";
 import { open, rm } from "node:fs/promises";
 import path from "node:path";
 import { lineRedactor } from "./redaction.ts";
+import {
+  closeInheritedFileDescriptors,
+  nodeIpcChannelFd,
+} from "./native-process-fds.ts";
 import { nativeLeaseProcesses } from "./native-process-identity.ts";
 import {
   WITHOUT_ADMINISTRATORS_SCRIPT,
   windowsCommandLine,
 } from "./windows-restricted-token.ts";
+
+// Release any non-FD_CLOEXEC descriptors inherited from a parent process
+// (such as Electron's DevTools socket on Linux) before opening logs or
+// spawning detached native services. Keep the active Node IPC channel FD open.
+const ipcFd = nodeIpcChannelFd();
+closeInheritedFileDescriptors({
+  keepFds: ipcFd !== undefined ? [ipcFd] : [],
+});
 
 const file = process.argv[2];
 // Windows reports neither owner nor mode bits; the native directory ACL,
