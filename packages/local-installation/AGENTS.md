@@ -173,6 +173,15 @@ library (`localmodels-computer.ts`). A fresh login passes it as
 existing Computer is rebound once on its next connect. A distribution without
 the tool writes none. External Computers (the Desktop's) get the same paths as
 the `LINGER_LOCALMODELS_*` keys of the installer's instance runtime.
+Signed component updates (`localmodels-manifest.ts`, `localmodels-update.ts`)
+store the verified Ed25519 manifest and signature in
+`<home>/tools/localmodels/active.json` (0600, atomic write). Setup, resume,
+the Daemon config, quit and uninstall all resolve through
+`resolveEffectiveToolSource` / `readVerifiedActiveTool`: an active record that
+is missing, tampered, incompatible, or superseded by a newer bundled
+`distribution.json` baseline falls back to the baseline (and removes stale
+overrides). Staging runs read-only smoke checks (`stack capabilities` and
+`library status`) before activation.
 
 Setup sets the Computer's model source through `localmodels source apply`
 (`byok-source.ts`): BYOK after the Runtime is ready, a local model after the

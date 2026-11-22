@@ -11,16 +11,18 @@ import {
   type Instance,
 } from "./instance.js";
 import { runProcess, type ProcessOptions } from "./process.js";
-import {
-  validatePublishedServiceSource,
-  type PublishedServiceSource,
-} from "./published-source.js";
 import type { InstallerEvent } from "./events.js";
 import { renameRetrying } from "./fs-retry.js";
-export type LocalmodelsToolSource = PublishedServiceSource & {
-  sourceCommit: string;
-  manifestSha256: string;
-};
+import {
+  inferToolVersions,
+  readVerifiedActiveTool,
+  validateToolSourceMetadata,
+  type LocalmodelsToolSource,
+  type ReadActiveToolOptions,
+} from "./localmodels-manifest.js";
+
+export type { LocalmodelsToolSource };
+
 interface ToolManifest {
   schemaVersion: number;
   platform: string;
@@ -32,20 +34,7 @@ interface ToolManifest {
 }
 type Options = ProcessOptions & { onEvent?: (event: InstallerEvent) => void };
 export function validateToolSource(value: unknown): LocalmodelsToolSource {
-  const source = validatePublishedServiceSource(value);
-  const extra = value as LocalmodelsToolSource;
-  if (
-    !/^[a-f0-9]{40}$/.test(extra.sourceCommit ?? "") ||
-    !/^[a-f0-9]{64}$/.test(extra.manifestSha256 ?? "")
-  )
-    throw new Error(
-      "Upstream tool distribution metadata requires a pinned commit and manifest checksum.",
-    );
-  return {
-    ...source,
-    sourceCommit: extra.sourceCommit,
-    manifestSha256: extra.manifestSha256,
-  };
+  return validateToolSourceMetadata(value);
 }
 function safeRelative(name: string): boolean {
   return (
@@ -292,12 +281,13 @@ async function prepareLocalmodelsTool(
   options: Options = {},
   dependencies: { source?: LocalmodelsToolSource; fetcher?: typeof fetch } = {},
 ) {
-  const pinned = dependencies.source ?? pinnedToolSource();
-  if (!pinned)
+  const resolved =
+    dependencies.source ?? (await resolveEffectiveToolSource(home))?.source;
+  if (!resolved)
     throw new Error(
       "Upstream tool distribution metadata is unavailable. Download the current Linger installer.",
     );
-  const source = validateToolSource(pinned);
+  const source = validateToolSource(resolved);
   const directory = kitDirectory(home, source);
   const base = path.dirname(directory);
   await privateDirectory(base);
@@ -422,14 +412,19 @@ export async function ensureLocalmodelsTool(
       dependencies.source.url.startsWith("https://dev.invalid/"))
   )
     return devTool;
-  const key = `${path.resolve(home)}:${JSON.stringify(dependencies.source ?? pinnedToolSource())}`;
+  const effectiveSource =
+    dependencies.source ?? (await resolveEffectiveToolSource(home))?.source;
+  const key = `${path.resolve(home)}:${JSON.stringify(effectiveSource)}`;
   const running = preparing.get(key);
   if (running) {
     const result = await running;
     options.signal?.throwIfAborted();
     return result;
   }
-  const task = prepareLocalmodelsTool(home, options, dependencies);
+  const task = prepareLocalmodelsTool(home, options, {
+    ...dependencies,
+    ...(effectiveSource ? { source: effectiveSource } : {}),
+  });
   preparing.set(key, task);
   try {
     return await task;
@@ -762,16 +757,58 @@ async function installedPinnedTool(
 ): Promise<ToolLocation | undefined> {
   const devTool = configuredDevTool();
   if (devTool) return devTool;
-  const source = pinnedToolSource();
-  if (!source) return;
-  return installedKit(kitDirectory(home, source), source).catch(
-    (cause: unknown) => {
-      throw new Error(
-        "Cannot stop local models: the installed tool kit could not be verified. Start Linger to repair the kit, then try again.",
-        { cause },
-      );
-    },
-  );
+  const effective = await resolveEffectiveToolSource(home);
+  if (!effective) return;
+  return installedKit(
+    kitDirectory(home, effective.source),
+    effective.source,
+  ).catch((cause: unknown) => {
+    throw new Error(
+      "Cannot stop local models: the installed tool kit could not be verified. Start Linger to repair the kit, then try again.",
+      { cause },
+    );
+  });
+}
+export interface EffectiveToolSource {
+  readonly source: LocalmodelsToolSource;
+  readonly origin: "bundled" | "updated";
+  readonly version?: string;
+  readonly npmVersion?: string;
+}
+/**
+ * The effective localmodels kit for `home`: a verified signed update recorded
+ * in `tools/localmodels/active.json` when newer than `baseline`, otherwise the
+ * bundled `baseline`. Every caller (setup, resume, daemon, quit, uninstall)
+ * resolves through this single entry point so versions never diverge.
+ */
+export async function resolveEffectiveToolSource(
+  home: string,
+  baseline: LocalmodelsToolSource | undefined = pinnedToolSource(),
+  options: ReadActiveToolOptions = {},
+): Promise<EffectiveToolSource | undefined> {
+  if (configuredDevTool()) {
+    const dev = baseline ?? pinnedToolSource();
+    return dev ? { source: dev, origin: "bundled" } : undefined;
+  }
+  const active = await readVerifiedActiveTool(home, baseline, options);
+  if (active)
+    return {
+      source: active.source,
+      origin: "updated",
+      version: active.manifest.version,
+      npmVersion: active.manifest.npmVersion,
+    };
+  if (!baseline) return undefined;
+  const versions = inferToolVersions(baseline);
+  return {
+    source: baseline,
+    origin: "bundled",
+    ...versions,
+  };
+}
+/** True when a developer checkout overrides the published localmodels kit. */
+export function hasDevLocalmodelsTool(): boolean {
+  return configuredDevTool() !== undefined;
 }
 /**
  * The kit this release pins, from the installer's published metadata

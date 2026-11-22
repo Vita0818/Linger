@@ -6,13 +6,21 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 
 import { Button } from "@/components/ui/button";
 import { FormFeedback } from "@/components/ui/form-feedback";
 import { Icon } from "@/components/ui/icon";
 import { Select, SelectItem } from "@/components/ui/select";
+import { useDesktopUpdate } from "@/features/auth/desktop-update";
 import { relativeTime } from "@/features/local-computer/computer-relative-time";
 import { useDesktopComputer } from "@/features/local-computer/desktop-computer";
 import { localComputersQueryOptions } from "@/features/local-computer/local-computer-queries";
@@ -95,6 +103,11 @@ import {
   modelSourceQueryOptions,
   type ModelSourceStatus,
 } from "./model-source-queries";
+import {
+  useLocalModelsUpdate,
+  type LocalModelsUpdate,
+} from "./local-models-update";
+import { LocalModelsUpdateBanner } from "./local-models-update-banner";
 
 type Dialog =
   | { kind: "advanced" }
@@ -175,6 +188,10 @@ export function ModelsPage() {
           computer={computer}
           computerId={computer.computer_id}
           displayName={computer.display_name}
+          isDesktopComputer={Boolean(
+            desktop?.status?.computerId &&
+            desktop.status.computerId === computer.computer_id,
+          )}
           key={computer.computer_id}
           onSelectComputer={select}
           ownedComputers={computers}
@@ -259,6 +276,7 @@ function ComputerModels({
   computerId,
   defaultComputerName,
   displayName,
+  isDesktopComputer = false,
   onOpenDefaultComputer,
   onSelectComputer,
   ownedComputers,
@@ -269,6 +287,8 @@ function ComputerModels({
   defaultComputerName?: string;
   /** Absent for a Computer outside the viewer's own inventory. */
   displayName?: string;
+  /** True when the desktop app is viewing its own local Computer. */
+  isDesktopComputer?: boolean;
   onOpenDefaultComputer?: () => void;
   onSelectComputer: (computerId: string) => void;
   ownedComputers: readonly InventoryComputer[];
@@ -278,6 +298,16 @@ function ComputerModels({
   const { t } = translation;
   const { client } = useTeamHubRuntime();
   const queryClient = useQueryClient();
+  const handleEngineApplied = useCallback(() => {
+    void queryClient.invalidateQueries({
+      queryKey: localModelsQueryKey(tenantId, computerId),
+    });
+  }, [computerId, queryClient, tenantId]);
+  const engineUpdate = useLocalModelsUpdate(
+    isDesktopComputer,
+    handleEngineApplied,
+  );
+  const desktopUpdate = useDesktopUpdate();
   const query = useQuery(localModelsQueryOptions(client, tenantId, computerId));
   const view = query.data;
   const [dialog, setDialog] = useState<Dialog | null>(null);
@@ -450,6 +480,13 @@ function ComputerModels({
           value={shownTab}
         />
       ) : null}
+      {isDesktopComputer && shownTab === "local" ? (
+        <LocalModelsUpdateBanner
+          desktopUpdate={desktopUpdate}
+          engineUpdate={engineUpdate}
+          updatedVersion={engineUpdate?.updatedVersion ?? null}
+        />
+      ) : null}
       {source.isError && !switcher.failure && !offline ? (
         <div className="mt-4">
           <FormFeedback tone="danger">
@@ -525,6 +562,7 @@ function ComputerModels({
           <Library
             computer={computer}
             dialog={dialog}
+            engineUpdate={engineUpdate}
             guidance={guidance}
             onRefresh={() => refresh.mutate()}
             onUseForAgents={(modelId) =>
@@ -621,6 +659,7 @@ function OfflineMessage({
 function Library({
   computer,
   dialog,
+  engineUpdate,
   guidance,
   onRefresh,
   onUseForAgents,
@@ -634,6 +673,7 @@ function Library({
 }: {
   computer?: InventoryComputer;
   dialog: Dialog | null;
+  engineUpdate?: LocalModelsUpdate;
   guidance: ReturnType<typeof memoryGuidance>;
   onRefresh: () => void;
   onUseForAgents: (modelId: string) => void;
@@ -1220,7 +1260,11 @@ function Library({
       )}
 
       {dialog?.kind === "advanced" ? (
-        <AdvancedDialog onClose={() => setDialog(null)} view={view} />
+        <AdvancedDialog
+          engineUpdate={engineUpdate}
+          onClose={() => setDialog(null)}
+          view={view}
+        />
       ) : null}
       {dialogEntry && makeRoom ? (
         <MakeRoomDialog
