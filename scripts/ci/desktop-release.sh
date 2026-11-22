@@ -67,7 +67,7 @@ die() {
 
 usage() {
   echo "Usage: $0 version <tag> | fetch-native|compile|package|build <target>" \
-    "| manifest|checksums <dir> <version> | github-release <dir> <tag> <version>" \
+    "| guided-install|manifest|checksums <dir> <version> | github-release <dir> <tag> <version>" \
     "| gitlab-upload <dir> <version>" >&2
   exit 2
 }
@@ -332,6 +332,23 @@ NODE
     die "could not write the update manifest"
 }
 
+cmd_guided_install() {
+  local dir="${1:-}" version="${2:-}" name source
+  [[ -n "$dir" && "$version" =~ $version_pattern ]] ||
+    die "guided-install needs an output directory and release version"
+  name="Linger-$version-guided-install"
+  source="$(git -C "$repo_root" rev-parse HEAD)"
+  mkdir -p "$dir"
+  git -C "$repo_root" archive --format=zip --prefix="$name/" \
+    --add-virtual-file="$name/SOURCE_COMMIT:$source"$'\n' \
+    "$source" LICENSE NOTICE scripts/install/install.sh scripts/install/install.ps1 \
+    scripts/installs/stack.sh scripts/installs/stack.ps1 >"$dir/$name.zip.part" || {
+      rm -f "$dir/$name.zip.part"
+      die "could not package the guided installer from $source"
+    }
+  mv "$dir/$name.zip.part" "$dir/$name.zip"
+}
+
 # Every release ships the three installers; SHA256SUMS.txt covers each file
 # of the version, extra ones such as the portable zip and the app archive
 # included, and the update manifest and its signature when there are.
@@ -339,7 +356,7 @@ cmd_checksums() {
   local dir="${1:-}" version="${2:-}" required file files=()
   [[ -d "$dir" ]] || die "checksums needs the folder holding the release files"
   [[ "$version" =~ $version_pattern ]] || die "checksums needs the release version"
-  for required in macos-arm64.dmg linux-x64.tar.gz windows-x64-setup.exe; do
+  for required in macos-arm64.dmg linux-x64.tar.gz windows-x64-setup.exe guided-install.zip; do
     [[ -f "$dir/Linger-$version-$required" ]] || die "$dir has no Linger-$version-$required"
   done
   while IFS= read -r file; do
@@ -429,6 +446,7 @@ case "$command" in
   compile) cmd_compile "$@" ;;
   package) cmd_package "$@" ;;
   build) cmd_build "$@" ;;
+  guided-install) cmd_guided_install "$@" ;;
   manifest) cmd_manifest "$@" ;;
   checksums) cmd_checksums "$@" ;;
   gitlab-upload) cmd_gitlab_upload "$@" ;;

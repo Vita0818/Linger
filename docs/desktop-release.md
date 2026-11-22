@@ -17,6 +17,26 @@ The newest stable packages are always at
 <https://github.com/simplexai-labs/linger/releases/latest>; a prerelease never
 becomes the latest release. Link there, not to a version.
 
+### Guided installer
+
+`Linger-<version>-guided-install.zip` packages `scripts/install/install.sh`
+and `scripts/install/install.ps1` with the pinned `stack.sh` and `stack.ps1`
+from the same Linger commit. `SOURCE_COMMIT` in the ZIP records that commit.
+Downstream tests and mirrors should pin the release version and the ZIP's
+SHA-256 from `SHA256SUMS.txt`, not copy the scripts into another repository or
+download them from `main`.
+
+Verify the ZIP against `SHA256SUMS.txt` and keep its directory layout when
+extracting it. Run `bash scripts/install/install.sh` on macOS or Linux, or
+`powershell -ExecutionPolicy Bypass -File .\scripts\install\install.ps1` on
+Windows, from the extracted directory. Use `--web-url` to connect to an
+existing Linger server. For a new Docker Compose server, use a full Linger
+checkout. The ZIP does not include the Compose source.
+
+The legacy `simplexai.com/install.sh` and `simplexai.com/install.ps1` still
+install the Simplex CLI. They do not consume this ZIP, and the Linger release
+workflow does not update those endpoints.
+
 ## Releasing
 
 In a checkout of simplexai-labs/linger:
@@ -44,7 +64,8 @@ run on `ubuntu-24.04` (the macOS and Windows runners have no Docker) and keep
 the files as workflow artifacts for 14 days: `desktop-<target>`, a zip of
 every file for the platform, and the installer on its own, not zipped (the
 `.dmg`, the `-setup.exe`, the Linux `.tar.gz`), for testers to download
-directly. `release` writes `SHA256SUMS.txt`
+directly. `prepare` keeps the guided installer ZIP as `desktop-guided-install`.
+`release` writes `SHA256SUMS.txt`
 and creates the GitHub Release, or uploads the files again to an existing one.
 A manual run publishes only with `publish` set.
 
@@ -122,10 +143,11 @@ gh release upload native-deps <archive> --repo simplexai-labs/linger
 | `Linger-<version>-windows-x64-setup.exe`    | Windows x64 per-user installer                                  |
 | `Linger-<version>-windows-x64-portable.zip` | Windows x64 folder to run without installing                    |
 | `Linger-<version>-macos-arm64.app.tar.gz`   | macOS app the updater swaps in                                  |
+| `Linger-<version>-guided-install.zip`       | Linger guided scripts and the pinned local model stack          |
 | `manifest.json`, `manifest.json.sig`        | only with the update key: the [auto-update](#auto-update) feed  |
 | `SHA256SUMS.txt`                            | SHA-256 of every file above                                     |
 
-Each package bundles the source package, PostgreSQL, voice tools, TeamHub and
+Each desktop package bundles the source package, PostgreSQL, voice tools, TeamHub and
 the Native services as described in
 [Packaging Details](#packaging-details).
 
@@ -219,6 +241,7 @@ On Linux x64 with Docker, Node, pnpm, Go and Python 3:
 ```sh
 DESKTOP_VERSION=0.16.36-rc.1 RCODESIGN=/path/to/rcodesign \
   scripts/ci/desktop-release.sh build darwin-arm64
+scripts/ci/desktop-release.sh guided-install .linger-runtime/desktop-release/assets 0.16.36-rc.1
 DESKTOP_UPDATE_KEY=/path/to/ed25519.pem \
   scripts/ci/desktop-release.sh manifest .linger-runtime/desktop-release/assets 0.16.36-rc.1
 scripts/ci/desktop-release.sh checksums .linger-runtime/desktop-release/assets 0.16.36-rc.1
@@ -227,8 +250,8 @@ scripts/ci/desktop-release.sh checksums .linger-runtime/desktop-release/assets 0
 With the archives already in `LINGER_NATIVE_POSTGRES_DIR` (default
 `~/.cache/linger-desktop`), `LINGER_NATIVE_DEPS_URL` is not needed.
 `manifest` needs the macOS app archive, the Linux archive and the setup program
-of that version; `checksums` refuses a folder without the DMG, the Linux
-archive and the setup program.
+of that version; `checksums` requires the DMG, the Linux archive, the setup
+program, and the guided installer ZIP.
 
 ## Packaging Details
 

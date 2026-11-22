@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, verify } from "node:crypto";
 import {
   chmodSync,
@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -74,12 +75,124 @@ describe("desktop-release.sh version", () => {
   });
 });
 
+describe("desktop-release.sh guided-install", () => {
+  const version = "0.16.33";
+  const bundle = `Linger-${version}-guided-install`;
+  const paths = [
+    "LICENSE",
+    "NOTICE",
+    "scripts/install/install.sh",
+    "scripts/install/install.ps1",
+    "scripts/installs/stack.sh",
+    "scripts/installs/stack.ps1",
+  ];
+
+  it("packs the release commit's scripts, not copies from the workspace", () => {
+    const dir = folder();
+    const result = run(["guided-install", dir, version]);
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+
+    const archive = join(dir, `${bundle}.zip`);
+    const commit = execFileSync("git", ["rev-parse", "HEAD"], {
+      encoding: "utf8",
+    });
+    const names = execFileSync("unzip", ["-Z", "-1", archive], {
+      encoding: "utf8",
+    })
+      .trim()
+      .split(/\r?\n/)
+      .filter((name) => !name.endsWith("/"));
+    expect(names.sort()).toEqual(
+      [...paths, "SOURCE_COMMIT"].map((name) => `${bundle}/${name}`).sort(),
+    );
+    expect(
+      execFileSync("unzip", ["-p", archive, `${bundle}/SOURCE_COMMIT`]),
+    ).toEqual(Buffer.from(commit));
+    for (const path of paths) {
+      expect(
+        execFileSync("unzip", ["-p", archive, `${bundle}/${path}`]),
+      ).toEqual(execFileSync("git", ["show", `${commit.trim()}:${path}`]));
+    }
+  });
+
+  it("rejects a source commit missing an entrypoint", () => {
+    const source = folder();
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", source, ...args], {
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: source,
+          GIT_CONFIG_NOSYSTEM: "1",
+        },
+        encoding: "utf8",
+      }).trim();
+    git("init", "--quiet");
+    for (const path of paths.filter(
+      (path) => path !== "scripts/install/install.ps1",
+    )) {
+      mkdirSync(join(source, path, ".."), { recursive: true });
+      writeFileSync(join(source, path), path);
+    }
+    git("add", ".");
+    const tree = git("write-tree");
+    const commit = git(
+      "-c",
+      "user.name=Release Test",
+      "-c",
+      "user.email=release@example.test",
+      "commit-tree",
+      tree,
+      "-m",
+      "Installer without a Windows entrypoint",
+    );
+    git("update-ref", "HEAD", commit);
+
+    const output = folder();
+    const result = run(["guided-install", output, version], {
+      GIT_DIR: join(source, ".git"),
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      `could not package the guided installer from ${commit}`,
+    );
+    expect(readdirSync(output)).toEqual([]);
+  });
+
+  it("finds the bundled stack when run outside a Linger checkout", () => {
+    const dir = folder();
+    expect(run(["guided-install", dir, version]).status).toBe(0);
+    execFileSync("unzip", ["-q", join(dir, `${bundle}.zip`), "-d", dir]);
+    const root = join(dir, bundle);
+    writeFileSync(
+      join(root, "scripts/installs/stack.sh"),
+      '[ "$1" = --bootstrap-json ] || exit 2\nprintf "%s\\n" "guided bundle bootstrap reached" >&2\nexit 1\n',
+    );
+
+    const result = run(
+      ["--status"],
+      {
+        HOME: dir,
+        TMPDIR: dir,
+        LOCALMODELS_KIT_HOME: dir,
+        LINGER_STACK_URL: "http://127.0.0.1:1/unexpected",
+      },
+      join(root, "scripts/install/install.sh"),
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("guided bundle bootstrap reached");
+  });
+});
+
 describe("desktop-release.sh checksums", () => {
   const version = "0.16.33";
   const required = [
     `Linger-${version}-macos-arm64.dmg`,
     `Linger-${version}-linux-x64.tar.gz`,
     `Linger-${version}-windows-x64-setup.exe`,
+    `Linger-${version}-guided-install.zip`,
   ];
 
   it("lists every file of the version", () => {
@@ -103,13 +216,25 @@ describe("desktop-release.sh checksums", () => {
 
   it("refuses a release without one of the installers", () => {
     const dir = folder();
-    for (const name of required.slice(0, 2))
+    for (const name of required.filter((name) => !name.endsWith(".exe")))
       writeFileSync(join(dir, name), name);
 
     const result = run(["checksums", dir, version]);
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(`Linger-${version}-windows-x64-setup.exe`);
+  });
+
+  it("refuses a release without the guided installer", () => {
+    const dir = folder();
+    for (const name of required.slice(0, -1))
+      writeFileSync(join(dir, name), name);
+
+    const result = run(["checksums", dir, version]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`Linger-${version}-guided-install.zip`);
+    expect(existsSync(join(dir, "SHA256SUMS.txt"))).toBe(false);
   });
 
   // The DMG names its platform like the other packages.
@@ -137,6 +262,7 @@ describe("desktop-release.sh manifest", () => {
     for (const name of Object.values(packages))
       writeFileSync(join(dir, name), name);
     writeFileSync(join(dir, `Linger-${version}-macos-arm64.dmg`), "dmg");
+    writeFileSync(join(dir, `Linger-${version}-guided-install.zip`), "zip");
     return dir;
   };
   // A copy of the script beside an update-manifest.ts holding a throwaway
