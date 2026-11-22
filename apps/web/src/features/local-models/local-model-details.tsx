@@ -159,9 +159,7 @@ export function ModelFacts({
       ) : null}
       {status === "unavailable" ? (
         <Fact label="Why not">
-          <span className="text-app-danger">
-            {unavailableCopy(model.availability.reason)}
-          </span>
+          <span className="text-app-danger">{unavailableCopy(model)}</span>
         </Fact>
       ) : null}
     </div>
@@ -212,12 +210,13 @@ function PoolBar({
           <span
             className="h-full bg-muted-foreground/30"
             style={{ width: width(otherBytes) }}
-            title={`Other apps · ${formatGigabytes(otherBytes)}`}
+            title={`${pool.kind === "unified" ? "Other use or reserved memory" : "Other apps"} · ${formatGigabytes(otherBytes)}`}
           />
         ) : null}
       </span>
       <span className="w-24 shrink-0 text-right text-xs whitespace-nowrap tabular-nums text-muted-foreground">
-        {formatGigabytes(poolFreeBytes(pool))} free
+        {formatGigabytes(poolFreeBytes(pool))}{" "}
+        {pool.kind === "unified" ? "available" : "free"}
       </span>
     </div>
   );
@@ -282,7 +281,7 @@ export function AdvancedDialog({
               Hardware
             </h3>
             <div className="divide-y divide-border">
-              <Fact label="Memory">
+              <Fact label="Physical RAM">
                 {formatGigabytes(host.ram_total_bytes)}
               </Fact>
               {host.gpus.map((gpu) => (

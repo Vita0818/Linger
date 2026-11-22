@@ -174,8 +174,9 @@ components:
           minimum: 0
     LocalModelPool:
       description: >-
-        One place models load into. The system and unified budgets are 80% of
-        RAM, as localmodels computes them.
+        One place models load into. The system budget is 80% of RAM. Unified
+        memory is a model budget, not physical RAM; total minus used is the
+        reported headroom for loading models.
       type: object
       additionalProperties: false
       required: [id, kind, total_bytes, used_bytes, holders]
@@ -215,6 +216,7 @@ components:
       properties:
         downloadable:
           type: boolean
+          description: Whether a download that attempts to load the model can start now.
         reason:
           $ref: "#/components/schemas/LocalModelAvailabilityReason"
           description: Present only when downloadable is false.

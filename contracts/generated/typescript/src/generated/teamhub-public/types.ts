@@ -463,7 +463,11 @@ export interface paths {
      */
     get: operations["getLocalComputerModels"];
     put?: never;
-    post?: never;
+    /**
+     * Ask an owned Local Computer to recheck its model library and memory.
+     * @description The Computer probes its current memory and publishes a snapshot. Read the snapshot with GET after the local-models invalidation hint. This action does not change any model.
+     */
+    post: operations["refreshLocalComputerModels"];
     delete?: never;
     options?: never;
     head?: never;
@@ -4533,7 +4537,7 @@ export interface components {
       /** Format: int64 */
       bytes: number;
     };
-    /** @description One place models load into. The system and unified budgets are 80% of RAM, as localmodels computes them. */
+    /** @description One place models load into. The system budget is 80% of RAM. Unified memory is a model budget, not physical RAM; total minus used is the reported headroom for loading models. */
     LocalModelPool: {
       id: components["schemas"]["LocalModelPoolId"];
       /** @enum {string} */
@@ -4565,6 +4569,7 @@ export interface components {
       have_bytes?: number;
     };
     LocalModelAvailability: {
+      /** @description Whether a download that attempts to load the model can start now. */
       downloadable: boolean;
       /** @description Present only when downloadable is false. */
       reason?: components["schemas"]["LocalModelAvailabilityReason"];
@@ -4730,19 +4735,6 @@ export interface components {
       pools: components["schemas"]["LocalModelPool"][];
       models: components["schemas"]["LocalModelView"][];
     };
-    /** @description A Human's action on one model. The click is the approval; there is no separate confirm step on the Computer. unload_first only with load. */
-    LocalModelActionRequest: {
-      /** @enum {string} */
-      action: "download" | "cancel" | "load" | "unload" | "remove";
-      /** @description Loaded models in the same pool to unload before the load starts. */
-      unload_first?: components["schemas"]["LocalModelId"][];
-    };
-    LocalModelActionAccepted: {
-      computer_id: components["schemas"]["Id"];
-      model_id: components["schemas"]["LocalModelId"];
-      /** @enum {string} */
-      action: "download" | "cancel" | "load" | "unload" | "remove";
-    };
     /**
      * @description error.code of a refused local-models action (403, 409, 502, 503, 504); 400, 401, and 404 use the common codes. LOCAL_COMPUTER_OFFLINE: the Computer is not connected. LOCAL_MODEL_ACTION_FORBIDDEN: the viewer is not the Computer owner. LOCAL_MODELS_UNAVAILABLE: the Computer has no usable localmodels tool. LOCAL_MODEL_ACTION_FAILED: the Computer refused with a library error that has no code of its own here (502). LOCAL_MODELS_SERVICE_UNAVAILABLE: Agent Service could not be reached (503). LOCAL_MODEL_ACTION_UNCONFIRMED: the connected Computer had not decided by the action's deadline; it may still run the action, and the library snapshots show the outcome (504). The other LOCAL_MODEL_ codes are the Computer's refusal codes of the same name (409).
      * @enum {string}
@@ -4773,6 +4765,19 @@ export interface components {
     };
     LocalModelsErrorResponse: {
       error: components["schemas"]["LocalModelsError"];
+    };
+    /** @description A Human's action on one model. The click is the approval; there is no separate confirm step on the Computer. unload_first only with load. */
+    LocalModelActionRequest: {
+      /** @enum {string} */
+      action: "download" | "cancel" | "load" | "unload" | "remove";
+      /** @description Loaded models in the same pool to unload before the load starts. */
+      unload_first?: components["schemas"]["LocalModelId"][];
+    };
+    LocalModelActionAccepted: {
+      computer_id: components["schemas"]["Id"];
+      model_id: components["schemas"]["LocalModelId"];
+      /** @enum {string} */
+      action: "download" | "cancel" | "load" | "unload" | "remove";
     };
     /**
      * @description The app macOS grants the permission to. linger is the Linger desktop app, which owns shell commands such as screencapture; computer_use is CuaDriver, which owns the computer-use tools.
@@ -8908,6 +8913,34 @@ export interface operations {
       };
       401: components["responses"]["Unauthenticated"];
       404: components["responses"]["NotFound"];
+    };
+  };
+  refreshLocalComputerModels: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        tenantId: components["parameters"]["TenantId"];
+        computerId: components["parameters"]["ComputerId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The Computer accepted the refresh. */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      401: components["responses"]["Unauthenticated"];
+      403: components["responses"]["LocalModelsRefused"];
+      404: components["responses"]["NotFound"];
+      409: components["responses"]["LocalModelsRefused"];
+      502: components["responses"]["LocalModelsRefused"];
+      503: components["responses"]["LocalModelsRefused"];
+      504: components["responses"]["LocalModelsRefused"];
     };
   };
   actOnLocalComputerModel: {

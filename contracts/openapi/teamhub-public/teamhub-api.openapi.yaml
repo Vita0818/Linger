@@ -768,6 +768,30 @@ paths:
           $ref: '../components/common.yaml#/components/responses/Unauthenticated'
         '404':
           $ref: '../components/common.yaml#/components/responses/NotFound'
+    post:
+      tags: [Local Computers]
+      operationId: refreshLocalComputerModels
+      summary: Ask an owned Local Computer to recheck its model library and memory.
+      description: >-
+        The Computer probes its current memory and publishes a snapshot. Read the snapshot
+        with GET after the local-models invalidation hint. This action does not change any model.
+      responses:
+        '202':
+          description: The Computer accepted the refresh.
+        '401':
+          $ref: '../components/common.yaml#/components/responses/Unauthenticated'
+        '403':
+          $ref: '../components/local-models.yaml#/components/responses/LocalModelsRefused'
+        '404':
+          $ref: '../components/common.yaml#/components/responses/NotFound'
+        '409':
+          $ref: '../components/local-models.yaml#/components/responses/LocalModelsRefused'
+        '502':
+          $ref: '../components/local-models.yaml#/components/responses/LocalModelsRefused'
+        '503':
+          $ref: '../components/local-models.yaml#/components/responses/LocalModelsRefused'
+        '504':
+          $ref: '../components/local-models.yaml#/components/responses/LocalModelsRefused'
   /v0/tenants/{tenantId}/local-computers/{computerId}/local-models/{modelId}/actions:
     parameters:
       - $ref: '#/components/parameters/TenantId'

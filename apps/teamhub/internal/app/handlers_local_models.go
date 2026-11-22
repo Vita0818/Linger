@@ -168,47 +168,58 @@ func (a *App) actOnLocalComputerModel(c *gin.Context) {
 		a.writeError(c, http.StatusBadRequest, "INVALID_REQUEST", "Local model action is invalid")
 		return
 	}
+	command := roomagent.LocalModelActionCommand{Action: string(request.Action), ModelID: modelID}
+	if request.UnloadFirst != nil {
+		command.UnloadFirst = *request.UnloadFirst
+	}
+	if a.forwardLocalModelAction(c, command) {
+		c.JSON(http.StatusAccepted, httpapi.LocalModelActionAccepted{
+			ComputerId: c.Param("computerId"), ModelId: modelID, Action: httpapi.LocalModelActionAcceptedAction(request.Action),
+		})
+	}
+}
+
+func (a *App) refreshLocalComputerModels(c *gin.Context) {
+	if a.forwardLocalModelAction(c, roomagent.LocalModelActionCommand{Action: "refresh"}) {
+		c.Status(http.StatusAccepted)
+	}
+}
+
+func (a *App) forwardLocalModelAction(c *gin.Context, command roomagent.LocalModelActionCommand) bool {
 	tenantID, computerID := c.Param("tenantId"), c.Param("computerId")
 	viewerID, ok := a.spaceHuman(c, tenantID)
 	if !ok {
-		return
+		return false
 	}
 	if a.agentRuntimeState == nil || a.localComputers == nil {
 		a.writeLocalModelsError(c, httpapi.LocalModelsErrorCodeLOCALMODELSSERVICEUNAVAILABLE)
-		return
+		return false
 	}
 	computer, err := a.agentRuntimeState.GetLocalComputer(c.Request.Context(), computerID)
 	switch {
 	case errors.Is(err, agentruntimestate.ErrNotFound), errors.Is(err, agentruntimestate.ErrInvalid),
 		err == nil && computer.Owner.TenantID != tenantID:
 		a.writeError(c, http.StatusNotFound, "LOCAL_COMPUTER_NOT_FOUND", "Local Computer was not found")
-		return
+		return false
 	case err != nil:
 		a.internalError(c, "read Local Computer for a model action", err)
-		return
+		return false
 	}
 	if computer.Owner.OwnerActorID != viewerID {
 		a.writeLocalModelsError(c, httpapi.LocalModelsErrorCodeLOCALMODELACTIONFORBIDDEN)
-		return
+		return false
 	}
 	if !localComputerOnline(computer.Status, computer.LastSeenAt, time.Now()) {
 		a.writeLocalModelsError(c, httpapi.LocalModelsErrorCodeLOCALCOMPUTEROFFLINE)
-		return
+		return false
 	}
-	command := roomagent.LocalModelActionCommand{
-		TenantID: tenantID, OwnerActorID: viewerID, ComputerID: computerID,
-		RequestID: ids.New("local_model_action"), Action: string(request.Action), ModelID: modelID,
-		ExpiresAt: time.Now().UTC().Add(localModelActionLifetime),
-	}
-	if request.UnloadFirst != nil {
-		command.UnloadFirst = *request.UnloadFirst
-	}
+	command.TenantID, command.OwnerActorID, command.ComputerID = tenantID, viewerID, computerID
+	command.RequestID = ids.New("local_model_action")
+	command.ExpiresAt = time.Now().UTC().Add(localModelActionLifetime)
 	refusal, err := a.localComputers.ActOnLocalModels(c.Request.Context(), command)
 	switch {
 	case err == nil && refusal == nil:
-		c.JSON(http.StatusAccepted, httpapi.LocalModelActionAccepted{
-			ComputerId: computerID, ModelId: modelID, Action: httpapi.LocalModelActionAcceptedAction(request.Action),
-		})
+		return true
 	case err == nil:
 		code, known := localModelRefusalCodes[refusal.Code]
 		if !known {
@@ -229,6 +240,7 @@ func (a *App) actOnLocalComputerModel(c *gin.Context) {
 		a.logger.Error("local_models.action_failed", "computer_id", computerID, "action", command.Action, "error", err)
 		a.writeLocalModelsError(c, httpapi.LocalModelsErrorCodeLOCALMODELSSERVICEUNAVAILABLE)
 	}
+	return false
 }
 
 func validLocalModelAction(modelID string, request httpapi.LocalModelActionRequest) bool {

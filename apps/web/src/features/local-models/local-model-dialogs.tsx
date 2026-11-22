@@ -54,25 +54,38 @@ export function MakeRoomDialog({
   onConfirm: (unloadIds: string[]) => void;
   view: LocalModelsView;
 }) {
-  const [selected, setSelected] = useState(() => makeRoomSelection(check));
+  const unified = check.pool.kind === "unified";
+  const [selected, setSelected] = useState(() =>
+    unified ? [] : makeRoomSelection(check),
+  );
   const chosen = new Set(selected);
   const enough = makesRoom(check, chosen);
+  const need = formatGigabytes(check.needBytes);
+  const free = formatGigabytes(check.freeBytes);
   const affected = check.loaded.flatMap((item) =>
     chosen.has(item.model.id) ? item.used_by.map((user) => user.name) : [],
   );
 
   return (
     <ModalDialog
-      description={`${entry.model.name} needs ${formatGigabytes(check.needBytes)} on ${poolLabel(view, check.pool)}; ${formatGigabytes(check.freeBytes)} is free.`}
+      description={
+        unified
+          ? `${entry.model.name} uses an estimated ${need} of unified memory; the reported budget is ${free}.`
+          : `${entry.model.name} needs ${need} on ${poolLabel(view, check.pool)}; ${free} is free.`
+      }
       footer={
         <>
           <Button onClick={onClose}>Cancel</Button>
           <Button
-            disabled={disabled || !enough}
+            disabled={disabled || (!unified && !enough)}
             onClick={() => onConfirm(selected)}
             tone="primary"
           >
-            {selected.length ? "Unload and load" : "Load"}
+            {selected.length
+              ? "Unload and load"
+              : unified
+                ? "Try loading"
+                : "Load"}
           </Button>
         </>
       }
@@ -124,8 +137,8 @@ export function MakeRoomDialog({
           </fieldset>
         ) : (
           <FormFeedback tone="danger">
-            Nothing else is loaded there. This model doesn&apos;t fit even when
-            the memory is empty.
+            No other local models can be unloaded here. Close other apps on the
+            computer, then recheck memory, or choose a smaller model.
           </FormFeedback>
         )}
         {affected.length ? (

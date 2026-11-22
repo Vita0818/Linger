@@ -79,13 +79,17 @@ describe("local models rules", () => {
 
   it("adds up GPU memory, or the memory of a Computer without GPUs", () => {
     expect(memorySummary(labView())).toEqual({
+      freeBytes: gb(24) * 2 - gb(21.4) - gb(1.1),
       gpu: true,
       totalBytes: gb(24) * 2,
+      unified: false,
       usedBytes: gb(21.4) + gb(1.1),
     });
     expect(memorySummary(macView())).toEqual({
+      freeBytes: gb(51.2) - gb(14.3),
       gpu: false,
       totalBytes: gb(51.2),
+      unified: true,
       usedBytes: gb(14.3),
     });
   });

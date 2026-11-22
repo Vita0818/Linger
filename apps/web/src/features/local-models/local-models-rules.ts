@@ -107,8 +107,10 @@ export function memorySummary(view: LocalModelsView) {
   const gpus = view.pools.filter((pool) => pool.kind === "gpu");
   const pools = gpus.length ? gpus : view.pools;
   return {
+    freeBytes: pools.reduce((sum, pool) => sum + poolFreeBytes(pool), 0),
     gpu: gpus.length > 0,
     totalBytes: pools.reduce((sum, pool) => sum + pool.total_bytes, 0),
+    unified: pools.some((pool) => pool.kind === "unified"),
     usedBytes: pools.reduce((sum, pool) => sum + pool.used_bytes, 0),
   };
 }

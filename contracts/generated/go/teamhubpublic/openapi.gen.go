@@ -6332,6 +6332,7 @@ type LocalModelArchitecture string
 
 // LocalModelAvailability defines model for LocalModelAvailability.
 type LocalModelAvailability struct {
+	// Downloadable Whether a download that attempts to load the model can start now.
 	Downloadable bool                          `json:"downloadable"`
 	Reason       *LocalModelAvailabilityReason `json:"reason,omitempty"`
 }
@@ -6424,7 +6425,7 @@ type LocalModelNote struct {
 // LocalModelNoteCode defines model for LocalModelNote.Code.
 type LocalModelNoteCode string
 
-// LocalModelPool One place models load into. The system and unified budgets are 80% of RAM, as localmodels computes them.
+// LocalModelPool One place models load into. The system budget is 80% of RAM. Unified memory is a model budget, not physical RAM; total minus used is the reported headroom for loading models.
 type LocalModelPool struct {
 	// GpuIndex Present only for kind gpu; matches LocalModelGpu.index.
 	GpuIndex *int                   `json:"gpu_index,omitempty"`

@@ -1,5 +1,6 @@
 import type { components } from "@linger/wire-contracts/teamhub-public/types";
 
+import type { LocalModel } from "./local-models-queries";
 import { formatGigabytes } from "./local-models-rules";
 
 type Schemas = components["schemas"];
@@ -26,9 +27,9 @@ const actionRefusals: Record<Schemas["LocalModelsErrorCode"], string> = {
   LOCAL_MODEL_JOB_RUNNING:
     "The computer is still working on this model. Wait for it to finish.",
   LOCAL_MODEL_MEMORY_INSUFFICIENT:
-    "The computer doesn't have enough memory for this model.",
+    "There isn't enough memory for this model. Recheck memory or choose a smaller model.",
   LOCAL_MODEL_NO_ROOM:
-    "There isn't enough free memory to load it. Unload another model first.",
+    "There isn't enough free memory to load it. Close other apps or unload another model, then recheck memory.",
   LOCAL_MODEL_PLATFORM_UNSUPPORTED: "This model doesn't run on this computer.",
   LOCAL_MODEL_UNKNOWN: "The computer doesn't have this model anymore.",
   LOCAL_MODELS_SERVICE_UNAVAILABLE:
@@ -87,12 +88,13 @@ export function modelNoteCopy(
   return notes[code](place);
 }
 
-type AvailabilityReason = Schemas["LocalModelAvailabilityReason"];
-
 /** The short reason on a row that can't be downloaded. */
-export function unavailableShortCopy(reason: AvailabilityReason | undefined) {
+export function unavailableShortCopy(model: LocalModel) {
+  const reason = model.availability.reason;
   if (reason?.code === "PLATFORM_UNSUPPORTED" || !reason)
     return "not for this computer";
+  if (reason.code === "MEMORY_INSUFFICIENT" && model.fit !== "none")
+    return "not enough memory right now";
   const need =
     reason.need_bytes === undefined ? "" : formatGigabytes(reason.need_bytes);
   if (!need)
@@ -105,7 +107,8 @@ export function unavailableShortCopy(reason: AvailabilityReason | undefined) {
 }
 
 /** The full reason a model can't be downloaded, shown in its details. */
-export function unavailableCopy(reason: AvailabilityReason | undefined) {
+export function unavailableCopy(model: LocalModel) {
+  const reason = model.availability.reason;
   const need =
     reason?.need_bytes === undefined
       ? undefined
@@ -116,6 +119,10 @@ export function unavailableCopy(reason: AvailabilityReason | undefined) {
       : formatGigabytes(reason.have_bytes);
   switch (reason?.code) {
     case "MEMORY_INSUFFICIENT":
+      if (model.fit !== "none")
+        return need && have
+          ? `Needs ${need} to load; ${have} is available now. Free up memory and recheck, or choose a smaller model.`
+          : "There isn't enough memory right now. Free up memory and recheck, or choose a smaller model.";
       return need && have
         ? `Needs ${need} of memory; this computer has ${have} for models.`
         : "This computer doesn't have enough memory for it.";

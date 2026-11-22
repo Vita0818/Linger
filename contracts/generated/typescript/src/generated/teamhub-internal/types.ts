@@ -2526,7 +2526,7 @@ export interface components {
       /** Format: int64 */
       bytes: number;
     };
-    /** @description One place models load into. The system and unified budgets are 80% of RAM, as localmodels computes them. */
+    /** @description One place models load into. The system budget is 80% of RAM. Unified memory is a model budget, not physical RAM; total minus used is the reported headroom for loading models. */
     LocalModelPool: {
       id: components["schemas"]["LocalModelPoolId"];
       /** @enum {string} */
@@ -2558,6 +2558,7 @@ export interface components {
       have_bytes?: number;
     };
     LocalModelAvailability: {
+      /** @description Whether a download that attempts to load the model can start now. */
       downloadable: boolean;
       /** @description Present only when downloadable is false. */
       reason?: components["schemas"]["LocalModelAvailabilityReason"];

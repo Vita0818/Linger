@@ -224,6 +224,69 @@ afterEach(() => {
 });
 
 describe("LocalModelsPage", () => {
+  it("rechecks the selected computer and restores download when memory frees up", async () => {
+    const existing = macView();
+    const model = localModel({
+      fit: "unified",
+      id: "gemma-3:Q4",
+      name: "Gemma 3",
+      pool: "unified",
+      recommended: true,
+    });
+    const view = macView({ models: [...existing.models, modelView(model)] });
+    const computerId = view.computer.computer_id;
+    const busy = withModel(view, model.id, {
+      availability: {
+        downloadable: false,
+        reason: {
+          code: "MEMORY_INSUFFICIENT",
+          have_bytes: gb(6),
+          need_bytes: gb(14.3),
+        },
+      },
+      recommended: false,
+    });
+    const fixture = setup([labView(), busy]);
+    const refreshes: string[] = [];
+    fixture.runtime.server.on("POST", viewPath, ({ params }) => {
+      refreshes.push(params.computerId!);
+      return new Response(null, { status: 202 });
+    });
+    renderPage(fixture, `?computer=${computerId}`);
+    await findModels();
+
+    expect(statusOf(model.name)).toContain("not enough memory right now");
+    const downloadName = `Download ${model.name}`;
+    expect(screen.queryByRole("button", { name: downloadName })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Recheck memory" }));
+    await waitFor(() => expect(refreshes).toEqual([computerId]));
+
+    publishSnapshot(fixture, { ...view, observed_at: "2026-11-18T12:01:00Z" });
+    expect(
+      await screen.findByRole("button", { name: downloadName }),
+    ).toBeEnabled();
+  });
+
+  it("keeps the previous reading and shows a retryable refresh failure", async () => {
+    const fixture = setup();
+    fixture.runtime.server.on("POST", viewPath, () =>
+      teamHubErrorResponse(504, "LOCAL_MODEL_ACTION_UNCONFIRMED"),
+    );
+    renderPage(fixture);
+    await findModels();
+
+    fireEvent.click(screen.getByRole("button", { name: "Recheck memory" }));
+    expect(
+      await screen.findByText("Couldn't recheck memory. Try again."),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Recheck memory" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByText("22.5 GB of 48 GB GPU memory in use"),
+    ).toBeVisible();
+  });
+
   it("lists every model once with its status, as the Computer reported it", async () => {
     renderPage(setup());
     await findModels();
@@ -457,19 +520,20 @@ describe("LocalModelsPage", () => {
     );
     const dialog = screen.getByRole("dialog", { name: "Make room to load" });
     expect(dialog).toHaveTextContent(
-      "Llama 3.3 70B needs 46 GB on Unified memory; 36.9 GB is free.",
+      "Llama 3.3 70B uses an estimated 46 GB of unified memory; the reported budget is 36.9 GB.",
     );
     const gptOss = within(dialog).getByRole("checkbox", {
       name: /GPT-OSS 20B/,
     });
-    expect(gptOss).toBeChecked();
+    expect(gptOss).not.toBeChecked();
+    expect(
+      within(dialog).getByRole("button", { name: "Try loading" }),
+    ).toBeEnabled();
+    fireEvent.click(gptOss);
     expect(dialog).toHaveTextContent(
       "Another Me can't answer until their model is loaded again.",
     );
 
-    fireEvent.click(gptOss);
-    expect(within(dialog).getByRole("button", { name: "Load" })).toBeDisabled();
-    fireEvent.click(gptOss);
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Unload and load" }),
     );
@@ -486,32 +550,50 @@ describe("LocalModelsPage", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("says so when nothing else in the pool can be unloaded", async () => {
+  it("lets the Mac decide whether to load when the estimates disagree", async () => {
     const mac = macView();
-    renderPage(
-      setup([
+    const model = localModel({
+      fit: "unified",
+      id: "qwen3.8-27b:UD-IQ3_S",
+      memory_bytes: gb(23.87),
+      name: "Qwen3.8 27B",
+      pool: "unified",
+      state: "idle",
+    });
+    const fixture = setup([
+      {
+        ...mac,
+        models: [modelView(model)],
+        pools: [
+          {
+            ...mac.pools[0]!,
+            holders: [],
+            total_bytes: gb(23.43),
+            used_bytes: 0,
+          },
+        ],
+      },
+    ]);
+    renderPage(fixture);
+    await findModels();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load Qwen3.8 27B" }));
+    const dialog = screen.getByRole("dialog", { name: "Make room to load" });
+    expect(dialog).toHaveTextContent(
+      "No other local models can be unloaded here.",
+    );
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Try loading" }),
+    );
+    await waitFor(() =>
+      expect(fixture.actions).toEqual([
         {
-          ...mac,
-          models: mac.models.slice(1),
-          pools: [
-            {
-              ...mac.pools[0]!,
-              holders: [],
-              total_bytes: gb(40),
-              used_bytes: 0,
-            },
-          ],
+          body: { action: "load" },
+          computerId: "computer-mac",
+          modelId: model.id,
         },
       ]),
     );
-    await findModels();
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Retry Llama 3.3 70B" }),
-    );
-    expect(
-      screen.getByRole("dialog", { name: "Make room to load" }),
-    ).toHaveTextContent("Nothing else is loaded there.");
   });
 
   it("asks before unloading a model an Agent uses, and not otherwise", async () => {
@@ -646,6 +728,9 @@ describe("LocalModelsPage", () => {
 
     // Not the viewer's own Mac: lab-118, read-only.
     expect(card("Qwen3 Coder 30B")).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Recheck memory" }),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByText(
         "Only the person who connected lab-118 can download, load or remove its models.",
@@ -786,7 +871,7 @@ describe("LocalModelsPage", () => {
 
     answer();
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Gemma 3 27B: There isn't enough free memory to load it. Unload another model first.",
+      "Gemma 3 27B: There isn't enough free memory to load it. Close other apps or unload another model, then recheck memory.",
     );
     expect(statusOf("Gemma 3 27B")).toMatch(/^Downloaded/);
     expect(
@@ -804,7 +889,7 @@ describe("LocalModelsPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Load Gemma 3 27B" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Gemma 3 27B: There isn't enough free memory to load it. Unload another model first.",
+      "Gemma 3 27B: There isn't enough free memory to load it. Close other apps or unload another model, then recheck memory.",
     );
     expect(screen.queryByText(/raw refusal detail/)).not.toBeInTheDocument();
   });
@@ -826,6 +911,9 @@ describe("LocalModelsPage", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       "lab-118 is offline (last seen 3 hours ago). This is what it last reported. Reconnect it in Computers to manage its models.",
     );
+    expect(
+      screen.getByRole("button", { name: "Recheck memory" }),
+    ).toBeDisabled();
     expect(
       screen.getByRole("button", { name: "Load Gemma 3 27B" }),
     ).toBeDisabled();
@@ -945,7 +1033,9 @@ describe("LocalModelsPage", () => {
     renderPage(setup(), "?computer=computer-mac");
     await findModels();
     expect(statuses()[0]).toBe("GPT-OSS 20B: Loaded · Memory · 14.3 GB");
-    expect(screen.getByText("14.3 GB of 51.2 GB memory in use")).toBeVisible();
+    expect(
+      screen.getByText("36.9 GB unified memory available for models"),
+    ).toBeVisible();
 
     fireEvent.click(screen.getByRole("combobox", { name: "Computer" }));
     fireEvent.click(await screen.findByRole("option", { name: "lab-118" }));

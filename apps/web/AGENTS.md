@@ -28,7 +28,11 @@ build:assets` to check the initial JS budget.
   code and enum label to English in `local-models-copy.ts`. Without `?computer=`
   the desktop app opens
   its own Computer. Only the Computer's owner can act; actions return at once
-  and progress arrives as `local-models` invalidation hints. From the click
+  and progress arrives as `local-models` invalidation hints. Recheck memory
+  asks the selected online Computer for a new measurement; it does not load
+  or unload models. The unified memory figure is the model budget, not the
+  Mac's physical RAM. A model that fits the hardware but lacks room now is
+  temporarily unavailable for download. From the click
   until a snapshot with another status or observation time, or a refusal, the
   row shows a requested load or download as started and spins the button of
   any other action, with the row's actions off. A Computer's

@@ -182,6 +182,24 @@ INSERT INTO agent_registrations(actor_id,tenant_id,agent_management_id,status,in
 		len(computers.commands[0].UnloadFirst) != 1 || computers.commands[0].RequestID == "" {
 		t.Fatalf("forwarded commands=%+v", computers.commands)
 	}
+	refresh := func(client *http.Client) (int, []byte) {
+		t.Helper()
+		status, _, response := env.request(client, http.MethodPost, base, nil, "")
+		return status, response
+	}
+	if status, body := refresh(bob); status != http.StatusForbidden || !containsJSONText(body, "LOCAL_MODEL_ACTION_FORBIDDEN") {
+		t.Fatalf("member refresh status=%d body=%s", status, body)
+	}
+	if status, body := refresh(alice); status != http.StatusAccepted {
+		t.Fatalf("owner refresh status=%d body=%s", status, body)
+	}
+	if len(computers.commands) != 2 {
+		t.Fatalf("forwarded commands=%+v", computers.commands)
+	}
+	if command := computers.commands[1]; command.Action != "refresh" || command.ComputerID != computerID ||
+		command.OwnerActorID != "actor_acme_alice" || command.ModelID != "" || len(command.UnloadFirst) != 0 {
+		t.Fatalf("forwarded refresh=%+v", command)
+	}
 	computers.refusal = &roomagent.LocalModelActionRefusal{Code: "LOAD_NO_ROOM", Pool: "gpu:0"}
 	if status, body := act(alice, map[string]any{"action": "load"}); status != http.StatusConflict || !containsJSONText(body, "LOCAL_MODEL_NO_ROOM") {
 		t.Fatalf("refused action status=%d body=%s", status, body)
@@ -202,7 +220,10 @@ INSERT INTO agent_registrations(actor_id,tenant_id,agent_management_id,status,in
 	if status, body := act(alice, map[string]any{"action": "unload"}); status != http.StatusServiceUnavailable || !containsJSONText(body, "LOCAL_COMPUTER_OFFLINE") {
 		t.Fatalf("offline action status=%d body=%s", status, body)
 	}
-	if len(computers.commands) != 4 {
+	if status, body := refresh(alice); status != http.StatusServiceUnavailable || !containsJSONText(body, "LOCAL_COMPUTER_OFFLINE") {
+		t.Fatalf("offline refresh status=%d body=%s", status, body)
+	}
+	if len(computers.commands) != 5 {
 		t.Fatalf("an offline Computer was sent an action: %d commands", len(computers.commands))
 	}
 

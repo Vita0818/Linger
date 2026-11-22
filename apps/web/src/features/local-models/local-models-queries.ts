@@ -1,7 +1,7 @@
 import type { components } from "@linger/wire-contracts/teamhub-public/types";
 import { queryOptions } from "@tanstack/react-query";
 
-import { teamHubData } from "@/features/teamhub/teamhub-api";
+import { teamHubData, teamHubDone } from "@/features/teamhub/teamhub-api";
 import type { TeamHubClient } from "@/features/teamhub/teamhub-client";
 
 type Schemas = components["schemas"];
@@ -47,6 +47,18 @@ export function localModelsQueryOptions(
     queryKey: localModelsQueryKey(tenantId, computerId),
     retry: false,
   });
+}
+
+export function refreshLocalComputerModels(
+  client: TeamHubClient,
+  tenantId: string,
+  computerId: string,
+) {
+  return teamHubDone(
+    client.api.POST(localModelsPath, {
+      params: { path: { computerId, tenantId } },
+    }),
+  );
 }
 
 /** Identifies pending actions of one Computer, so each row can show its own. */

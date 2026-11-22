@@ -140,7 +140,7 @@ export function ModelRow({
       .filter(Boolean)
       .join(" · "),
     loading: where ?? null,
-    unavailable: unavailableShortCopy(model.availability.reason),
+    unavailable: unavailableShortCopy(model),
   }[status];
 
   const action = (

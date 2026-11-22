@@ -207,7 +207,9 @@ Go service owning Human HTTP/SSE, Agent callbacks, and active product state.
   `runtime_model` equals the model's `pi_model` exactly (loaded or not), limited to the
   Agents the reader sees in the Agent directory. Only the owner acts
   (`LOCAL_MODEL_ACTION_FORBIDDEN`), and only while the Computer is online by
-  the Computers page's 60-second rule (`LOCAL_COMPUTER_OFFLINE`). A connected
+  the Computers page's 60-second rule (`LOCAL_COMPUTER_OFFLINE`). `POST` on the
+  library forwards a `refresh` without a model ID under the same rule; the
+  resulting snapshot uses the same invalidation path. A connected
   Computer that has not decided within the action's 10 seconds answers 504
   `LOCAL_MODEL_ACTION_UNCONFIRMED`: it may still act, and the snapshots show
   the outcome. The Computer's refusal codes map to `LocalModelsErrorCode` in

@@ -1,4 +1,4 @@
-import { AiChipIcon } from "@hugeicons/core-free-icons";
+import { AiChipIcon, RefreshIcon } from "@hugeicons/core-free-icons";
 import {
   useMutation,
   useMutationState,
@@ -33,6 +33,7 @@ import {
   localModelActionMutationKey,
   localModelsQueryKey,
   localModelsQueryOptions,
+  refreshLocalComputerModels,
   type LocalModelAction,
   type LocalModelActionInput,
   type LocalModelsView,
@@ -198,26 +199,56 @@ function ComputerModels({
   tenantId: string;
 }) {
   const { client } = useTeamHubRuntime();
+  const queryClient = useQueryClient();
   const query = useQuery(localModelsQueryOptions(client, tenantId, computerId));
   const view = query.data;
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const summary = view?.available ? memorySummary(view) : undefined;
+  const refresh = useMutation({
+    mutationFn: () => refreshLocalComputerModels(client, tenantId, computerId),
+    onSettled: () =>
+      queryClient.invalidateQueries({
+        queryKey: localModelsQueryKey(tenantId, computerId),
+      }),
+  });
 
   return (
     <>
-      <header className="flex items-start justify-between gap-4">
+      <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h1 className="text-2xl text-foreground">Local models</h1>
           {summary?.totalBytes ? (
             <p className="mt-1.5 text-sm text-muted-foreground">
-              {formatGigabytes(summary.usedBytes)} of{" "}
-              {formatGigabytes(summary.totalBytes)}{" "}
-              {summary.gpu ? "GPU memory" : "memory"} in use
+              {summary.unified
+                ? `${formatGigabytes(summary.freeBytes)} unified memory available for models`
+                : `${formatGigabytes(summary.usedBytes)} of ${formatGigabytes(summary.totalBytes)} ${summary.gpu ? "GPU memory" : "memory"} in use`}
+            </p>
+          ) : null}
+          {view?.observed_at ? (
+            <p
+              aria-live="polite"
+              className="mt-1 text-xs text-muted-foreground"
+            >
+              Last checked{" "}
+              <time dateTime={view.observed_at}>
+                {new Date(view.observed_at).toLocaleString()}
+              </time>
             </p>
           ) : null}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {computerPicker}
+          {view?.viewer_is_owner ? (
+            <Button
+              disabled={view.computer.status !== "online"}
+              loading={refresh.isPending}
+              onClick={() => refresh.mutate()}
+              size="compact"
+            >
+              {refresh.isPending ? null : <Icon icon={RefreshIcon} size={14} />}
+              Recheck memory
+            </Button>
+          ) : null}
           {view?.available ? (
             <Button
               onClick={() => setDialog({ kind: "advanced" })}
@@ -228,6 +259,14 @@ function ComputerModels({
           ) : null}
         </div>
       </header>
+
+      {refresh.isError ? (
+        <div className="mt-3">
+          <FormFeedback tone="danger">
+            Couldn&apos;t recheck memory. Try again.
+          </FormFeedback>
+        </div>
+      ) : null}
 
       {view ? (
         <Library
@@ -430,7 +469,7 @@ function Library({
               </FormFeedback>
             </div>
           ) : null}
-          <section aria-label="Models" className="mt-6 grid gap-2">
+          <section aria-label="Models" className="mt-6 grid grid-cols-1 gap-2">
             {entries.map((entry) => {
               const modelId = entry.model.id;
               return (
