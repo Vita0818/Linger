@@ -50,6 +50,7 @@ import {
   parseSetCookie,
   LocalServerUnverifiedError,
   proveLocalServer,
+  setupLocalServerState,
   SignInRejectedError,
   signInFailure,
   signInWithPassword,
@@ -4930,5 +4931,66 @@ describe("InstallerApi polling", () => {
       (await open(fake.fetcher)).run(plan, controller.signal, () => {}),
     ).rejects.toThrow();
     expect(fake.reads()).toBe(1);
+  });
+});
+
+describe("setupLocalServerState", () => {
+  it("forwards BYOK check, models, preparing and refusal state and shortens home paths", () => {
+    const view = setupLocalServerState(
+      {
+        available: true,
+        phase: "idle",
+        message: "",
+        preparing: "starting",
+        steps: ["prepare", "services", "workspace", "connect", "agents"],
+        step: "prepare",
+        progress: 0,
+        attempt: 0,
+        localModels: { state: "unavailable" },
+        location: { path: "/home/alice/.simplexai", custom: false },
+        keys: { composio: false },
+        byokCheck: {
+          state: "ready",
+          protocol: "openai-responses",
+          url: "https://api.example.com/v1/responses",
+          modelId: "gpt-5.4",
+          contextWindow: 200_000,
+        },
+        byokModels: {
+          state: "ready",
+          url: "https://api.example.com/v1/models",
+          models: [{ id: "gpt-5.4", contextWindow: 200_000 }],
+        },
+        legacyBackup:
+          "/home/alice/.simplexai/instances/desktop/simplex-backup-1",
+        refusal: {
+          code: "WINDOWS_PRIVATE_PATH_UNSAFE",
+          reason: "UNSAFE_PARENT_ACCESS",
+        },
+      },
+      undefined,
+      "/home/alice",
+    );
+    expect(view.preparing).toBe("starting");
+    expect(view.location.path).toBe("~/.simplexai");
+    expect(view.legacyBackup).toBe(
+      "~/.simplexai/instances/desktop/simplex-backup-1",
+    );
+    expect(view.byokCheck).toEqual({
+      state: "ready",
+      protocol: "openai-responses",
+      url: "https://api.example.com/v1/responses",
+      modelId: "gpt-5.4",
+      contextWindow: 200_000,
+    });
+    expect(view.byokModels).toEqual({
+      state: "ready",
+      url: "https://api.example.com/v1/models",
+      models: [{ id: "gpt-5.4", contextWindow: 200_000 }],
+    });
+    expect(view.refusal).toEqual({
+      code: "WINDOWS_PRIVATE_PATH_UNSAFE",
+      reason: "UNSAFE_PARENT_ACCESS",
+    });
   });
 });
