@@ -49,6 +49,7 @@ export interface SetupWindowOptions {
   readonly defaultDisplayName: string;
   // Open on start; set when this computer is not connected yet.
   readonly show: boolean;
+  readonly finishTemporarySession?: () => void;
   readonly loginItem: {
     get(): boolean;
     set(on: boolean): void;
@@ -122,6 +123,16 @@ export class SetupWindowModule implements Module {
     const onCookie = (): void => void this.#refreshSignedIn().then(push);
     // The account file exists once the installation is ready.
     const onLocal = (): void => {
+      if (
+        this.#options.finishTemporarySession &&
+        local.status().phase === "ready"
+      ) {
+        const windows = ctx.get<WindowManagerModule>("WindowManager");
+        windows.markOpenFromSetup();
+        windows.show();
+        this.#window?.destroy();
+        return;
+      }
       push();
       if (local.status().phase === "ready")
         void this.#refreshAccount().then(push);
@@ -176,7 +187,9 @@ export class SetupWindowModule implements Module {
       maximizable: false,
       fullscreenable: false,
       show: false,
-      title: "Set Up Linger",
+      title: this.#options.finishTemporarySession
+        ? "Set Up Temporary Linger Session"
+        : "Set Up Linger",
       backgroundColor: "#ffffff",
       icon: nativeImage.createFromBuffer(Buffer.from(iconPng)),
       ...(process.platform === "darwin"
@@ -211,16 +224,30 @@ export class SetupWindowModule implements Module {
       const sender = this.#ctx?.get<DiagnosticsModule>("Diagnostics").sender;
       if (sender?.state().phase === "confirm") void sender.cancel();
     });
+    const finishTemporarySession = this.#options.finishTemporarySession;
+    if (finishTemporarySession)
+      window.on("close", (event) => {
+        event.preventDefault();
+        finishTemporarySession();
+      });
     this.#window = window;
     void window.loadURL(SETUP_URL).catch(() => undefined);
     // Whether this computer can serve a local model, found out while the
     // page is read; the option appears once it can.
-    this.#ctx?.get<LocalServerModule>("LocalServer").inspect();
+    if (!finishTemporarySession)
+      this.#ctx?.get<LocalServerModule>("LocalServer").inspect();
   }
 
   async #run(command: SetupCommand): Promise<void> {
     const ctx = this.#ctx!;
     const windows = ctx.get<WindowManagerModule>("WindowManager");
+    if (
+      this.#options.finishTemporarySession &&
+      (command.op === "server.set" ||
+        command.op === "local.location.pick" ||
+        command.op === "open-at-login.set")
+    )
+      throw new Error("Temporary sessions use their own installation.");
     switch (command.op) {
       case "server.set":
         if (!windows.setServer(command.serverUrl))
@@ -365,6 +392,9 @@ export class SetupWindowModule implements Module {
     const config = ctx.config.get();
     const diagnostics = ctx.get<DiagnosticsModule>("Diagnostics");
     return {
+      ...(this.#options.finishTemporarySession
+        ? { temporarySession: true }
+        : {}),
       platform: process.platform as SetupState["platform"],
       version: this.#options.version,
       serverUrl: config.serverUrl ?? "",

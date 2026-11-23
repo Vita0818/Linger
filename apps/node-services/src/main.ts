@@ -34,6 +34,7 @@ interface RunningRole {
 /** What the host passes to every role's start function. */
 interface RoleHost extends ProcessControl {
   readonly logger: JsonLogger;
+  readonly temporarySession: boolean;
   /** The shared listener; present whenever an HTTP role is selected. */
   readonly http: HttpHost | undefined;
   /** The process's one document normalizer, served by LLM Wiki. */
@@ -113,13 +114,15 @@ const HTTP_ROLES: ReadonlySet<RoleName> = new Set([
 ]);
 
 /** An unset or empty NODE_SERVICES_ROLES starts every role. */
-export function selectRoles(value: string | undefined): RoleName[] {
+export function selectRoles(
+  value: string | undefined,
+  temporarySession = false,
+): RoleName[] {
   const names = (value ?? "")
     .split(",")
     .map((name) => name.trim())
     .filter(Boolean);
   const all = Object.keys(roles) as RoleName[];
-  if (names.length === 0) return all;
   const unknown = names.filter((name) => !Object.hasOwn(roles, name));
   if (unknown.length > 0) {
     throw new Error(
@@ -128,7 +131,11 @@ export function selectRoles(value: string | undefined): RoleName[] {
     );
   }
   // Selected roles keep the host's start order.
-  return all.filter((name) => names.includes(name));
+  return all.filter(
+    (name) =>
+      (names.length === 0 || names.includes(name)) &&
+      (!temporarySession || (name !== "memory" && name !== "llm-wiki")),
+  );
 }
 
 /** The shared listener's address from NODE_SERVICES_HTTP_ADDRESS. */
@@ -153,19 +160,24 @@ export async function main(
 ): Promise<void> {
   const logger = createJsonLogger({ service: "node-services" });
   await runServiceProcess(async (control) => {
-    const selected = selectRoles(process.env.NODE_SERVICES_ROLES);
+    const temporarySession = process.env.LINGER_TEMPORARY_SESSION === "1";
+    const selected = selectRoles(
+      process.env.NODE_SERVICES_ROLES,
+      temporarySession,
+    );
     const http = selected.some((name) => HTTP_ROLES.has(name))
       ? await startHttpHost(readHttpAddress(process.env))
       : undefined;
     const normalizer = new WorkerDocumentNormalizer();
-    void pruneModelPackages().then(
-      (removed) => {
-        if (removed.length)
-          logger.log("info", "model_packages.pruned", { packages: removed });
-      },
-      (error: unknown) =>
-        logger.log("warn", "model_packages.prune_failed", { error }),
-    );
+    if (!temporarySession)
+      void pruneModelPackages().then(
+        (removed) => {
+          if (removed.length)
+            logger.log("info", "model_packages.pruned", { packages: removed });
+        },
+        (error: unknown) =>
+          logger.log("warn", "model_packages.prune_failed", { error }),
+      );
     const seams: RoleHost["seams"] = {};
     const running: { name: RoleName; role: RunningRole }[] = [];
     const stopRoles = async (): Promise<void> => {
@@ -207,6 +219,7 @@ export async function main(
           ...control,
           http,
           logger: logger.child({ role: name }),
+          temporarySession,
           normalizer,
           seams,
           ...overrides,

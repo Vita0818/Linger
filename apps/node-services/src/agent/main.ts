@@ -44,6 +44,7 @@ const READINESS_TIMEOUT_MS = 3_000;
 
 export interface AgentRoleHost extends ProcessControl {
   readonly http: HttpHost;
+  readonly temporarySession?: boolean;
   /** Memory's flashback when the memory role shares this process. */
   readonly flashback?: Flashback;
   /** Replaces ROOM_REQUEST_TIMEOUT_MS; process tests shorten it. */
@@ -166,6 +167,7 @@ export async function startAgentService(
       signal,
       shutdownProgress,
       runGracePeriodMs: RUN_DRAIN_TIMEOUT_MS,
+      ...(host.temporarySession ? { temporarySession: true } : {}),
       runnerCredentialAuthority,
       runnerGateway,
       localContextRuntime,

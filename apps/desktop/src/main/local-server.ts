@@ -63,6 +63,7 @@ import {
   type WindowsPrivateRefusal,
 } from "@linger/local-installation/windows-private";
 import { adoptUserEnvironment } from "@linger/local-installation/user-environment";
+import { temporarySessionModelEnvironment } from "@linger/local-installation/temporary-session";
 
 import {
   NODE_RUNTIME_RELEASES,
@@ -309,6 +310,7 @@ export interface LocalServerOptions {
   // The desktop keeps its Node runtime and its record here wherever the
   // installation goes.
   readonly home: string;
+  readonly temporarySession?: boolean;
   // This app's version, recorded with the source package it unpacks.
   readonly version: string;
   // The bundled installer (installer.js, web/, native-process-worker.mjs).
@@ -437,6 +439,7 @@ export class LocalServerModule implements Module {
   #origin: string | undefined;
   #resuming = false;
   #running: Promise<void> | undefined;
+  #startingTemporaryInstaller: Promise<void> | undefined;
   #check: LocalModelsCheck = { state: "unchecked" };
   #checkedAt: number | undefined;
   // Read once from the bundled installer's distribution.
@@ -536,7 +539,9 @@ export class LocalServerModule implements Module {
     // The installer manager keeps running a started installation; it exits
     // by itself once idle.
     this.#abort.abort();
-    if (reason === "quit") await this.#stopLocalModels();
+    await this.#startingTemporaryInstaller;
+    if (reason === "quit" && !this.#options.temporarySession)
+      await this.#stopLocalModels();
   }
 
   // The Computer exits with the app, so after a quit nothing uses the local
@@ -604,6 +609,10 @@ export class LocalServerModule implements Module {
     return record !== undefined && sameOrigin(record.origin, serverUrl);
   }
 
+  installationHome(): string {
+    return this.#home;
+  }
+
   status(): LocalServerStatus {
     // The services run natively, so the build must carry PostgreSQL for
     // this computer.
@@ -659,7 +668,7 @@ export class LocalServerModule implements Module {
   // Installs into a folder the person picked, once it can hold Linger; null
   // goes back to the default.
   async chooseLocation(picked: string | null): Promise<void> {
-    if (this.#running) return;
+    if (this.#running || this.#options.temporarySession) return;
     const previous = this.#location;
     if (picked === null) {
       this.#location = undefined;
@@ -1058,6 +1067,8 @@ export class LocalServerModule implements Module {
 
   async #install(plan: LocalServerPlan): Promise<void> {
     const status = this.status();
+    if (this.#options.temporarySession && !plan.byok)
+      throw new Error("Temporary sessions use a configured BYOK model.");
     if (!status.available)
       throw new Error("Running Linger on this computer is not supported here");
     const signal = this.#abort.signal;
@@ -1147,6 +1158,8 @@ export class LocalServerModule implements Module {
       // never create the Another Me, so ask for it now. Another runtime
       // reruns the installation for it.
       for (;;) {
+        if (job.signInRequired && this.#options.temporarySession)
+          throw new Error("The configured BYOK runtime is unavailable.");
         const nextChoice = job.signInRequired
           ? await this.#timed("await_signin", () =>
               this.#awaitSignIn(installer, signal),
@@ -2253,6 +2266,7 @@ export class LocalServerModule implements Module {
     repo: string,
     signal: AbortSignal,
   ): Promise<InstallerApi> {
+    signal.throwIfAborted();
     const child = spawn(
       node,
       [
@@ -2271,7 +2285,16 @@ export class LocalServerModule implements Module {
         // A detached Windows process otherwise opens its own console window.
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, LINGER_HOME: home },
+        env: {
+          ...process.env,
+          LINGER_HOME: home,
+          ...(this.#options.temporarySession
+            ? {
+                ...temporarySessionModelEnvironment(home),
+                LINGER_TEMPORARY_SESSION: "1",
+              }
+            : {}),
+        },
       },
     );
     const log = this.#ctx?.log;
@@ -2283,7 +2306,7 @@ export class LocalServerModule implements Module {
       reason = text.trim().slice(0, 1500) || reason;
       log?.warn("local_server.installer_stderr", { line: text.slice(0, 1500) });
     });
-    const origin = await new Promise<string>((resolve, reject) => {
+    const started = new Promise<string>((resolve, reject) => {
       let output = "";
       const fail = (message: string) => {
         child.stdout.removeAllListeners("data");
@@ -2310,6 +2333,21 @@ export class LocalServerModule implements Module {
       );
       signal.addEventListener("abort", () => fail("Cancelled"), { once: true });
     });
+    if (this.#options.temporarySession) {
+      const closed = new Promise<void>((resolve) => {
+        child.once("close", () => resolve());
+      });
+      // Before the manager reports its origin, the supervisor may have no
+      // control file to stop it with. End a cancelled startup here.
+      this.#startingTemporaryInstaller = started.then(
+        () => undefined,
+        async () => {
+          child.kill();
+          await closed;
+        },
+      );
+    }
+    const origin = await started;
     child.stdout.resume();
     child.unref();
     const launcher = await readFile(

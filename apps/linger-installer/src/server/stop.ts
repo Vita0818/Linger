@@ -16,6 +16,7 @@ type Instance = NonNullable<Awaited<ReturnType<typeof loadInstance>>>;
 export interface StopOptions {
   // The default home; the desktop records a custom install location in it.
   home: string;
+  includeCustomHome?: boolean;
   instanceName: string;
   signal: AbortSignal;
   log: (message: string) => void;
@@ -64,7 +65,11 @@ export async function stopDesktopInstallation(
     "the installation",
     options.onFailure,
   );
-  for (const home of await installationHomes(options.home)) {
+  const homes =
+    options.includeCustomHome === false
+      ? [options.home]
+      : await installationHomes(options.home);
+  for (const home of homes) {
     // The services stop even when the manager could not: an earlier release's
     // manager has no /api/stop, and a stale session may name another server.
     await attempt(home, () => stopManager(home, options, fetcher), "manager");

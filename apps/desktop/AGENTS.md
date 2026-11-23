@@ -38,6 +38,13 @@ Gateway and runs Agents. The daemon exits with the app.
   `out/Linger-<version>-linux-x64.tar.gz` (one folder with the `linger`
   executable) after `node build.mjs` with the `linux-x64` daemon target.
 
+## Temporary sessions
+
+The tray's **New Temporary Session** action uses the bundled installer as a
+supervisor. Set the guest's user data and service home before Electron starts,
+keep its workspace grant inside that root, and stop its owned services before
+disposing of the temporary directory. See [Temporary sessions](../../docs/temporary-sessions.md).
+
 ## Structure
 
 - Connector OAuth opens in the system browser. The desktop prepares an

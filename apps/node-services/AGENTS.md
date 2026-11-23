@@ -28,6 +28,9 @@
   `started()`, which the host calls once every selected role has started, and
   stops from `stopping()`, called before the first role stops: Memory's
   scheduler runs only while the agent role's model call can be there. The shared listener starts only when an HTTP role is selected.
+- Desktop sets `LINGER_TEMPORARY_SESSION=1` only for a disposable local
+  installation. It excludes Memory and LLM Wiki and disables Agent memory
+  and proactive review for that process.
 - `src/main.ts` is the only process entrypoint. It owns SIGINT/SIGTERM through
   `src/process-lifecycle.ts`: the first signal aborts startup or starts
   ordered shutdown under the fixed 95-second `SHUTDOWN_TIMEOUT_MS`, later

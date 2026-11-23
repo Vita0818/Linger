@@ -27,6 +27,20 @@ describe("trayMenu", () => {
     ]);
   });
 
+  it("offers a temporary session when the app can launch one", () => {
+    const items = trayMenu({
+      status: { tone: "online", label: "Online" },
+      preventSleep: false,
+      enrolled: true,
+      canOpenTemporarySession: true,
+    });
+    expect(items).toContainEqual({
+      kind: "action",
+      action: "temporary-session",
+      label: "New Temporary Session…",
+    });
+  });
+
   it("offers Send Diagnostics only while a receiver is set up", () => {
     const actions = (canSendDiagnostics: boolean) =>
       trayMenu({

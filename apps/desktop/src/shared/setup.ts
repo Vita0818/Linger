@@ -244,6 +244,7 @@ export type SetupDiagnosticsSend =
     };
 
 export interface SetupState {
+  readonly temporarySession?: boolean;
   readonly platform: "darwin" | "win32" | "linux";
   readonly version: string;
   readonly serverUrl: string;

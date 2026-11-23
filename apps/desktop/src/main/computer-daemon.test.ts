@@ -84,6 +84,7 @@ const setup = (
     permissions?: ComputerDaemonOptions["permissions"];
     relaunch?: () => void;
     protect?: ComputerDaemonOptions["protect"];
+    usePreferredRuntimeOnly?: boolean;
   } = {},
 ) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "computer-daemon-"));
@@ -135,6 +136,9 @@ const setup = (
     ...(options.permissions ? { permissions: options.permissions } : {}),
     ...(options.relaunch ? { relaunch: options.relaunch } : {}),
     ...(options.protect ? { protect: options.protect } : {}),
+    ...(options.usePreferredRuntimeOnly
+      ? { usePreferredRuntimeOnly: true }
+      : {}),
   });
   return { daemon, ctx, bus, config, children, directory };
 };
@@ -214,6 +218,19 @@ describe("ComputerDaemonModule", () => {
       pi: "/home/me/.linger/runtime/pi/pi",
     });
     expect(written.preferred_runtime).toBe("pi");
+  });
+
+  it("starts a temporary computer with only its configured runtime", async () => {
+    const { daemon, ctx, bus, config, children } = setup({
+      usePreferredRuntimeOnly: true,
+    });
+    await daemon.start(ctx);
+    expect(children).toHaveLength(0);
+    config.update({ preferredRuntime: "pi" });
+    bus.emit("computer.changed", "computer-1");
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    const written = JSON.parse(readFileSync(children[0]!.configFile, "utf8"));
+    expect(written.enabled_runtimes).toEqual(["pi"]);
   });
 
   it("names the localmodels tool and restarts when the installer reports it", async () => {

@@ -637,6 +637,7 @@ export async function stopLocalmodels(
     signal: AbortSignal;
     log?: (message: string) => void;
     keepController?: boolean;
+    env?: NodeJS.ProcessEnv;
   },
   dependencies: {
     run?: typeof runLocalmodels;
@@ -671,6 +672,7 @@ export async function stopLocalmodels(
     const result = await run(home, args, {
       signal: options.signal,
       timeoutMs: 30_000,
+      ...(options.env ? { env: options.env } : {}),
     }).catch((error: unknown) => {
       options.signal.throwIfAborted();
       return {

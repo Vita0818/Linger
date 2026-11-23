@@ -55,6 +55,7 @@ export interface ComputerDaemonOptions {
   readonly teamhubCliDirectory?: string;
   // The approval card names the computer; setup may leave the name unset.
   readonly defaultDisplayName?: string;
+  readonly usePreferredRuntimeOnly?: boolean;
   // The daemon's environment. Resolving the login shell takes a moment, so
   // the first launch waits for it instead of the app start.
   readonly env?:
@@ -153,6 +154,7 @@ export const daemonConfig = (
     readonly directory: string;
     readonly teamhubCliDirectory?: string;
     readonly defaultDisplayName?: string;
+    readonly usePreferredRuntimeOnly?: boolean;
     readonly env?: Readonly<Record<string, string>>;
     readonly platformPath?: typeof path;
   },
@@ -174,7 +176,12 @@ export const daemonConfig = (
       ? { runtime_paths: runtimePaths }
       : {}),
     ...(config.preferredRuntime
-      ? { preferred_runtime: config.preferredRuntime }
+      ? {
+          preferred_runtime: config.preferredRuntime,
+          ...(options.usePreferredRuntimeOnly
+            ? { enabled_runtimes: [config.preferredRuntime] }
+            : {}),
+        }
       : {}),
     workspace_grants: config.workspaceGrants.map((g) => ({
       grant_id: g.grantId,
@@ -331,7 +338,11 @@ export class ComputerDaemonModule implements Module {
     const ctx = this.#ctx!;
     if (this.#stopping || this.#child || !this.#env) return;
     const config = ctx.config.get();
-    if (!config.computerId || !config.tenantId) {
+    if (
+      !config.computerId ||
+      !config.tenantId ||
+      (this.#options.usePreferredRuntimeOnly && !config.preferredRuntime)
+    ) {
       this.#setConnection("disconnected");
       this.#setState("stopped");
       return;
@@ -508,6 +519,9 @@ export class ComputerDaemonModule implements Module {
             ? { defaultDisplayName: this.#options.defaultDisplayName }
             : {}),
           env,
+          ...(this.#options.usePreferredRuntimeOnly
+            ? { usePreferredRuntimeOnly: true }
+            : {}),
         }),
         null,
         2,

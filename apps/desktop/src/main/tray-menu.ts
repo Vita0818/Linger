@@ -4,6 +4,7 @@ import type { AnnouncedUpdate, UpdateState } from "./updater.js";
 export type TrayAction =
   | "enroll"
   | "open"
+  | "temporary-session"
   | "toggle-prevent-sleep"
   | "install-update"
   | "check-update"
@@ -26,6 +27,7 @@ export interface TrayMenuState {
   readonly status: StatusSummary;
   readonly preventSleep: boolean;
   readonly enrolled: boolean;
+  readonly canOpenTemporarySession?: boolean;
   // The updater's progress; a failure says why, since it is otherwise only
   // in the log.
   readonly update?: UpdateState;
@@ -40,6 +42,15 @@ export const trayMenu = (state: TrayMenuState): TrayMenuItem[] => [
   ...updateItems(state.update),
   { kind: "separator" },
   { kind: "action", action: "open", label: "Open Linger" },
+  ...(state.canOpenTemporarySession
+    ? [
+        {
+          kind: "action" as const,
+          action: "temporary-session" as const,
+          label: "New Temporary Session…",
+        },
+      ]
+    : []),
   // Reconnecting re-enrolls the same computer, e.g. after its credential
   // was rejected or the server moved.
   {

@@ -3,6 +3,15 @@ import { describe, expect, it } from "vitest";
 import { readHttpAddress, selectRoles } from "../src/main.js";
 
 describe("selectRoles", () => {
+  it("omits memory and Wiki roles inside a temporary session", () => {
+    expect(selectRoles(undefined, true)).toEqual([
+      "agent",
+      "voice",
+      "document",
+    ]);
+    expect(selectRoles("memory,agent,llm-wiki", true)).toEqual(["agent"]);
+  });
+
   it("starts every role when NODE_SERVICES_ROLES is unset or empty", () => {
     const all = ["memory", "llm-wiki", "agent", "voice", "document"];
     expect(selectRoles(undefined)).toEqual(all);

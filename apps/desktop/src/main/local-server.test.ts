@@ -205,12 +205,20 @@ if (fs.existsSync(path.join(home, "start-refused"))) {
   process.stderr.write("Installer could not start (WINDOWS_PRIVATE_PATH_UNSAFE): Windows private path validation failed\n");
   process.exit(1);
 }
+if (fs.existsSync(path.join(home, "hold-installer-start"))) {
+  fs.writeFileSync(path.join(home, "installer-starting.json"), JSON.stringify({
+    pid: process.pid,
+    temporarySession: process.env.LINGER_TEMPORARY_SESSION,
+  }));
+  setInterval(() => {}, 1000);
+} else {
 const origin = "http://127.0.0.1:4321";
 fs.writeFileSync(
   path.join(home, "installer", "launch.html"),
   '<meta http-equiv="refresh" content="0;url=' + origin + '/#token=abc&amp;x">',
 );
 process.stdout.write("Installer is running at " + origin + "\n");
+}
 `;
 
 const sourceArchive = (root: string) => {
@@ -560,6 +568,41 @@ const macCheckout = (home: string) => {
 };
 
 describe("LocalServerModule", () => {
+  it("stops a temporary installer that has yet to publish its control session", async () => {
+    const f = fixture(
+      (home) => ({ ...withCheckout(home), temporarySession: true }),
+      {},
+      (home) => {
+        checkout(home);
+        writeFileSync(path.join(home, "hold-installer-start"), "");
+      },
+    );
+    await f.host.start();
+    const installing = f.module.begin({
+      runtime: "pi",
+      byok: {
+        runtime: "pi",
+        baseUrl: "http://127.0.0.1:9000",
+        path: "/v1",
+        endpoint: "/chat/completions",
+        protocol: "openai-chat",
+        modelId: "fixture-model",
+      },
+    });
+    const marker = path.join(f.home, "installer-starting.json");
+    try {
+      await waitForInstaller(() => expect(existsSync(marker)).toBe(true));
+    } finally {
+      await f.host.stop("quit");
+      await installing;
+    }
+    const { pid, temporarySession } = JSON.parse(readFileSync(marker, "utf8"));
+    expect(temporarySession).toBe("1");
+    expect(() => process.kill(pid, 0)).toThrow(
+      expect.objectContaining({ code: "ESRCH" }),
+    );
+  });
+
   it("is offered only where native source mode runs", () => {
     const { module } = fixture({
       platform: "win32",

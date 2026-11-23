@@ -213,6 +213,7 @@ export type AgentManagerApplicationStateBackend =
 
 export interface AgentManagerApplicationOptions {
   readonly identityResolver: AgentIdentityResolver;
+  readonly temporarySession?: boolean;
   readonly stateBackend: AgentManagerApplicationStateBackend;
   readonly contextHost: AgentContextHost;
   readonly runnerGateway?: LocalContextRuntimeGateway & {
@@ -459,8 +460,9 @@ export const createAgentManagerApplication = (
               runtimeStateContextStore!.trackOwnRevisionAdvance(input.ref),
           })
       : stateBackend.runtimeStateFactory;
+  const remember = !options.temporarySession;
   const memoryClient =
-    stateBackend.kind === "teamhub" && options.teamhubFiles
+    remember && stateBackend.kind === "teamhub" && options.teamhubFiles
       ? createMemoryClient(options.teamhubFiles)
       : undefined;
   // Shared maintenance Coordinator + activation projection, created once for
@@ -485,7 +487,7 @@ export const createAgentManagerApplication = (
             : {}),
         })
       : undefined;
-  const userMemories = createUserMemoryTracker();
+  const userMemories = remember ? createUserMemoryTracker() : undefined;
   // One explicit builtin assembly for the whole process: shared clients,
   // Coordinators, and budgets are bound here, never per Context.
   const features = createBuiltinAgentFeatures({
@@ -504,10 +506,14 @@ export const createAgentManagerApplication = (
       ...(agentMemoryServices && options.agentMemoryMaintenance
         ? { contextRestart: {} }
         : {}),
-      userMemories,
-      resolveUserMemory: async (agentId) =>
-        (await options.identityResolver.resolveIdentity(agentId))
-          .representedHuman?.memory,
+      ...(userMemories
+        ? {
+            userMemories,
+            resolveUserMemory: async (agentId: string) =>
+              (await options.identityResolver.resolveIdentity(agentId))
+                .representedHuman?.memory,
+          }
+        : {}),
     },
   });
   const contextViewContent = options.runnerGateway?.contextViewContent;

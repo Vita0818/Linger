@@ -100,6 +100,10 @@ still be running. The full `--stop` command reports the same failure. Windows
 uninstall aborts on that failure; replacement setup reports it and proceeds.
 A missing pinned kit has nothing to stop.
 
+`--temporary-desktop` supervises an isolated Desktop session. It reads the
+ordinary installation's BYOK configuration, starts the guest with its own
+home, and stops its manager, services and gateway before removing that home.
+
 `--inspect` checks without migrating installations. Its optional
 `--inspect-target` selects the home whose disk and runtimes are checked;
 `--home` still owns the inspection tool cache and state.

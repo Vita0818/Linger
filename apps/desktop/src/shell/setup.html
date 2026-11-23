@@ -3757,7 +3757,9 @@
           ? "Installation stopped"
           : starting
             ? "Starting Linger"
-            : "Installing Linger";
+            : state.temporarySession
+              ? "Starting Temporary Session"
+              : "Installing Linger";
         $("installing-plan").textContent = failed
           ? locationHint(local) ||
             "Your data is kept. Fix the problem and try again."
@@ -4360,6 +4362,10 @@
       setup.getState().then((initial) => {
         state = initial;
         const phase = initial.localServer.phase;
+        if (initial.temporarySession) {
+          show(phase === "ready" ? "ready" : "installing");
+          return;
+        }
         show(
           ["preparing", "installing", "failed"].includes(phase)
             ? "installing"

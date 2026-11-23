@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { existsSync, renameSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +17,13 @@ import {
 } from "electron";
 
 import { lingerHome } from "@linger/local-installation/home";
+import {
+  takeTemporarySessionModel,
+  temporarySessionEnvironment,
+  temporarySessionFromArgs,
+  temporarySessionModelEnvironment,
+  type TemporarySessionPaths,
+} from "@linger/local-installation/temporary-session";
 
 import { quitRequested } from "./app-window.js";
 import { CredentialStore } from "./computer-credential.js";
@@ -61,12 +69,24 @@ const VERSION = __DESKTOP_VERSION__;
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 let userDataMove: UserDataMove | undefined;
-// Development overrides; installed builds use the platform defaults.
-if (process.env.LINGER_DESKTOP_USER_DATA)
+let temporarySession: TemporarySessionPaths | undefined;
+try {
+  temporarySession = temporarySessionFromArgs(process.argv);
+  if (temporarySession && process.platform !== "darwin")
+    throw new Error("Temporary Desktop sessions require macOS.");
+} catch {
+  dialog.showErrorBox("Linger", "The temporary session directory is invalid.");
+  app.exit(1);
+  throw new Error("Invalid temporary session.");
+}
+if (temporarySession) {
+  app.setPath("userData", temporarySession.userData);
+  app.setPath("sessionData", temporarySession.userData);
+} else if (process.env.LINGER_DESKTOP_USER_DATA) {
   app.setPath("userData", path.resolve(process.env.LINGER_DESKTOP_USER_DATA));
-// The installed app's data folder holds the Computer's credential, identity
-// and enrollment. Installs from before the rename move theirs here once.
-else if (app.isPackaged) {
+} else if (app.isPackaged) {
+  // The installed app's data folder holds the Computer's credential,
+  // identity and enrollment. Move installs under the old name once.
   const userData = path.join(app.getPath("appData"), "Linger");
   try {
     userDataMove = moveLegacyUserData(
@@ -114,9 +134,12 @@ async function main(): Promise<void> {
       user_data: userDataMove.userData,
       ...(userDataMove.setAside ? { set_aside: userDataMove.setAside } : {}),
     });
-  if (process.platform === "win32" && app.isPackaged) markStartMenuShortcut();
+  if (process.platform === "win32" && app.isPackaged && !temporarySession)
+    markStartMenuShortcut();
   const background = process.argv.includes("--background");
-  const envServer = parseServerUrl(process.env.LINGER_SERVER_URL ?? "");
+  const envServer = temporarySession
+    ? undefined
+    : parseServerUrl(process.env.LINGER_SERVER_URL ?? "");
   const config = new ConfigStore(
     path.join(userData, "config.json"),
     envServer ? { serverUrl: envServer } : {},
@@ -127,20 +150,24 @@ async function main(): Promise<void> {
     path.join(daemonDirectory, "credential.json"),
   );
   // Earlier versions ran agents through the bridge and runtime-host.
-  await retireLegacyBridge(defaultBridgeStateDirectory(), VERSION, log);
-  migrateLegacyComputer(
-    {
-      bridgeStateDirectory: defaultBridgeStateDirectory(),
-      runtimeDirectory: path.join(userData, "runtime"),
-      daemonStateDirectory: path.join(daemonDirectory, "state"),
-    },
-    config,
-    credentials,
-    log,
-  );
+  if (!temporarySession) {
+    await retireLegacyBridge(defaultBridgeStateDirectory(), VERSION, log);
+    migrateLegacyComputer(
+      {
+        bridgeStateDirectory: defaultBridgeStateDirectory(),
+        runtimeDirectory: path.join(userData, "runtime"),
+        daemonStateDirectory: path.join(daemonDirectory, "state"),
+      },
+      config,
+      credentials,
+      log,
+    );
+  }
 
-  // The default LINGER_HOME of the installer.
-  const home = lingerHome();
+  const home = temporarySession?.home ?? lingerHome();
+  const finishTemporarySession = temporarySession
+    ? () => app.quit()
+    : undefined;
   // The cookie header of the window's session for a server.
   const webSessionCookie = async (
     serverUrl: string,
@@ -154,6 +181,7 @@ async function main(): Promise<void> {
   };
   const localServer = new LocalServerModule({
     home,
+    temporarySession: !!temporarySession,
     version: VERSION,
     macosVersion: () => process.getSystemVersion(),
     installerDirectory: path.join(here, "../installer"),
@@ -162,7 +190,7 @@ async function main(): Promise<void> {
       ? { sourceDependencies: __SOURCE_DEPENDENCIES__ }
       : {}),
     // Developers install their own linger checkout instead.
-    ...(process.env.LINGER_CHECKOUT
+    ...(!temporarySession && process.env.LINGER_CHECKOUT
       ? { checkout: process.env.LINGER_CHECKOUT }
       : {}),
     // The window's session is the default one, which enrollment reads too.
@@ -180,12 +208,14 @@ async function main(): Promise<void> {
     shellPreload: path.join(here, "../preload/shell.cjs"),
     background: background || needsSetup,
     localServerResumable: (url) => localServer.resumable(url),
+    ...(finishTemporarySession ? { finishTemporarySession } : {}),
   });
   const setup = new SetupWindowModule({
     preload: path.join(here, "../preload/setup.cjs"),
     version: VERSION,
     defaultDisplayName,
     show: !background && needsSetup,
+    ...(finishTemporarySession ? { finishTemporarySession } : {}),
     loginItem: {
       get: () => app.getLoginItemSettings().openAtLogin,
       set: (on) =>
@@ -214,9 +244,10 @@ async function main(): Promise<void> {
     version: VERSION,
     platform: process.platform,
     arch: process.arch,
-    install: app.isPackaged
-      ? updateInstallFor(process.platform, process.execPath, existsSync)
-      : undefined,
+    install:
+      app.isPackaged && !temporarySession
+        ? updateInstallFor(process.platform, process.execPath, existsSync)
+        : undefined,
     downloadDirectory: path.join(userData, "updates"),
     announce: (state) => {
       if (!Notification.isSupported()) return;
@@ -254,7 +285,7 @@ async function main(): Promise<void> {
           openExternal: (url: string) => shell.openExternal(url),
           // The same quit and relaunch path an installed update takes.
           relaunch: () => {
-            relaunch = true;
+            if (!temporarySession) relaunch = true;
             app.quit();
           },
         }
@@ -283,7 +314,8 @@ async function main(): Promise<void> {
         });
         return result.canceled ? undefined : result.filePaths[0];
       },
-      defaultDirectory: path.join(app.getPath("home"), "Linger"),
+      defaultDirectory:
+        temporarySession?.workspace ?? path.join(app.getPath("home"), "Linger"),
     }),
     new ComputerDaemonModule({
       spawn: spawnDaemon(
@@ -296,7 +328,8 @@ async function main(): Promise<void> {
       // with a matching version and the computer needs no Node.
       teamhubCliDirectory: path.join(here, "../teamhub-cli"),
       defaultDisplayName,
-      env: daemonEnv(log),
+      env: daemonEnv(log, temporarySession?.home),
+      ...(temporarySession ? { usePreferredRuntimeOnly: true } : {}),
       ...(process.platform === "win32"
         ? { protect: protectWithDaemon(daemonExecutable()) }
         : {}),
@@ -318,7 +351,19 @@ async function main(): Promise<void> {
     }),
     setup,
     updater,
-    new TrayModule({ quit: () => void quit() }),
+    new TrayModule({
+      quit: () => void quit(),
+      temporarySession: !!temporarySession,
+      ...(app.isPackaged &&
+      process.platform === "darwin" &&
+      __SOURCE_ARCHIVE__ &&
+      !temporarySession
+        ? {
+            openTemporarySession: () =>
+              openTemporarySession(localServer.installationHome()),
+          }
+        : {}),
+    }),
     new DesktopIpcModule({
       defaultDisplayName,
       ...(desktopPermissions ? { permissions: desktopPermissions } : {}),
@@ -337,7 +382,7 @@ async function main(): Promise<void> {
     } else showApp();
   });
   app.on("activate", showApp);
-  // Closing the window only hides it; the tray keeps the app running.
+  // The tray owns the app lifecycle even when no windows are open.
   app.on("window-all-closed", () => {});
   let quitting = false;
   app.on("before-quit", (event) => {
@@ -375,6 +420,13 @@ async function main(): Promise<void> {
 
   try {
     await host.start();
+    if (temporarySession && !quitting) {
+      const byok = await takeTemporarySessionModel(temporarySession);
+      void localServer.begin({ runtime: byok.runtime, byok }).catch(() => {
+        dialog.showErrorBox("Linger", "The temporary session could not start.");
+        app.quit();
+      });
+    }
     // Uptime since process start, to see where launch time goes.
     log.info("desktop.started", {
       version: VERSION,
@@ -441,9 +493,12 @@ function electronPower(): PowerApi {
 // The user's terminal environment, which runtimes inherit, without the app's
 // own control variables. The runtime paths stay for the daemon config; the
 // daemon keeps LINGER_* from runtimes.
-async function daemonEnv(log: Logger): Promise<Record<string, string>> {
+async function daemonEnv(
+  log: Logger,
+  temporaryHome?: string,
+): Promise<Record<string, string>> {
   const started = Date.now();
-  const login = await loginShellEnvironment();
+  const login = temporaryHome ? undefined : await loginShellEnvironment();
   log.info("computer_daemon.login_shell", {
     resolved: login !== undefined,
     duration_ms: Date.now() - started,
@@ -463,7 +518,9 @@ async function daemonEnv(log: Logger): Promise<Record<string, string>> {
     const value = process.env[name];
     if (value) env[name] = value;
   }
-  return env;
+  return temporaryHome
+    ? { ...env, ...temporarySessionModelEnvironment(temporaryHome) }
+    : env;
 }
 
 interface UserDataMove {
@@ -497,4 +554,32 @@ function moveLegacyUserData(
     userData,
     ...(setAside ? { setAside } : {}),
   };
+}
+
+function openTemporarySession(home: string): void {
+  const child = spawn(
+    process.execPath,
+    [
+      path.join(here, "../installer/installer.js"),
+      "--temporary-desktop",
+      "--home",
+      home,
+    ],
+    {
+      detached: true,
+      windowsHide: true,
+      stdio: "ignore",
+      env: { ...temporarySessionEnvironment(), ELECTRON_RUN_AS_NODE: "1" },
+    },
+  );
+  const failed = () =>
+    dialog.showErrorBox(
+      "Linger",
+      "The temporary session could not start or close cleanly. Check your BYOK model settings.",
+    );
+  child.once("error", failed);
+  child.once("exit", (code) => {
+    if (code !== 0) failed();
+  });
+  child.unref();
 }

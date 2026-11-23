@@ -29,8 +29,8 @@
     },
     "memory": {
       "owner": "docs",
-      "description": "Role selection for node-services; see apps/node-services/AGENTS.md. The default value runs as-is, and it is not listed in .env.example.",
-      "names": ["NODE_SERVICES_ROLES"]
+      "description": "Role selection for node-services and the isolated Desktop temporary session marker; see apps/node-services/AGENTS.md. Neither needs a setting in .env.example.",
+      "names": ["NODE_SERVICES_ROLES", "LINGER_TEMPORARY_SESSION"]
     },
     "web": {
       "owner": "code-default",

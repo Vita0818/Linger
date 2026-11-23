@@ -60,6 +60,7 @@ export interface WindowManagerOptions {
   readonly preload: string;
   readonly shellPreload: string;
   readonly background: boolean;
+  readonly finishTemporarySession?: () => void;
   readonly localServerResumable?: (serverUrl: string) => Promise<boolean>;
 }
 
@@ -295,10 +296,14 @@ export class WindowManagerModule implements Module {
       minWidth: 800,
       minHeight: 560,
       show: false,
-      title: "Linger",
+      title: this.#options.finishTemporarySession
+        ? "Linger — Temporary Session"
+        : "Linger",
       backgroundColor: CANVAS,
       icon: nativeImage.createFromBuffer(Buffer.from(iconPng)),
-      ...chrome(process.platform),
+      ...(this.#options.finishTemporarySession && process.platform === "darwin"
+        ? {}
+        : chrome(process.platform)),
     });
     const titlebar = drawsTitlebar(process.platform)
       ? new WebContentsView({
@@ -356,7 +361,9 @@ export class WindowManagerModule implements Module {
       this.#ctx!.config.update({ window: { x, y, width, height } });
       if (this.#quitting) return;
       event.preventDefault();
-      window.hide();
+      if (this.#options.finishTemporarySession)
+        this.#options.finishTemporarySession();
+      else window.hide();
     });
     window.on("closed", () => {
       this.#closeVoiceWindow?.();
@@ -555,7 +562,11 @@ export class WindowManagerModule implements Module {
     const serverUrl = this.#serverUrl();
     return {
       platform: process.platform as ShellPlatform,
-      title: serverUrl ? new URL(serverUrl).host : "",
+      title: this.#options.finishTemporarySession
+        ? "Temporary Session"
+        : serverUrl
+          ? new URL(serverUrl).host
+          : "",
       canGoBack: contents?.navigationHistory.canGoBack() ?? false,
       canGoForward: contents?.navigationHistory.canGoForward() ?? false,
       loading: contents?.isLoading() ?? false,
@@ -851,6 +862,8 @@ export class WindowManagerModule implements Module {
       return new Response(null, { status: 204 });
     }
     if (url.pathname === "/connect") {
+      if (this.#options.finishTemporarySession)
+        return new Response(null, { status: 403 });
       if (!this.setServer(url.searchParams.get("server") ?? ""))
         this.#loadOffline(INVALID_SERVER);
       return new Response(null, { status: 204 });

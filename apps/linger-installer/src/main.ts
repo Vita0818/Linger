@@ -26,6 +26,7 @@ export function parseInstallerArguments(args: string[]) {
     migrate?: boolean;
     stop?: boolean;
     stopLocalModels?: boolean;
+    temporaryDesktop?: boolean;
   } = {
     home: lingerHome(),
   };
@@ -53,6 +54,10 @@ export function parseInstallerArguments(args: string[]) {
     }
     if (flag === "--stop") {
       options.stop = true;
+      continue;
+    }
+    if (flag === "--temporary-desktop") {
+      options.temporaryDesktop = true;
       continue;
     }
     if (flag === "--stop-local-models") {
@@ -102,7 +107,8 @@ export function parseInstallerArguments(args: string[]) {
     !options.userKeys &&
     !options.migrate &&
     !options.stop &&
-    !options.stopLocalModels
+    !options.stopLocalModels &&
+    !options.temporaryDesktop
   )
     throw new Error("The installer needs a source checkout (--source-repo).");
   if (options.inspectTarget && !options.inspect)
@@ -434,6 +440,19 @@ if (
     );
   } catch (error) {
     failedToStart(error);
+  }
+  if (options?.temporaryDesktop) {
+    try {
+      if (process.platform !== "darwin")
+        throw new Error("Temporary Desktop sessions require macOS.");
+      const { runTemporarySession } =
+        await import("./server/temporary-session.js");
+      await runTemporarySession(options.home);
+    } catch {
+      // The parent receives only a status, never model credentials or content.
+      process.exitCode = 1;
+    }
+    options = undefined;
   }
   // Installs from before the rename move to the Linger home once, before
   // any mode opens it; --migrate does only that, for the desktop client.

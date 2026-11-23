@@ -28,6 +28,8 @@ import type { WindowManagerModule } from "./window-manager.js";
 export interface TrayOptions {
   // Owned by the app lifecycle.
   readonly quit: () => void;
+  readonly openTemporarySession?: () => void;
+  readonly temporarySession?: boolean;
 }
 
 const BUSY_FRAME_MS = 400;
@@ -130,7 +132,10 @@ export class TrayModule implements Module {
     }
     if (!this.#tray) return;
     this.#tray.setImage(this.#icon());
-    this.#tray.setToolTip(`Linger · ${this.#status().label}`);
+    const name = this.#options.temporarySession
+      ? "Linger Temporary Session"
+      : "Linger";
+    this.#tray.setToolTip(name + " · " + this.#status().label);
     this.#tray.setContextMenu(this.#menu());
   }
 
@@ -153,6 +158,7 @@ export class TrayModule implements Module {
       status,
       preventSleep: power.alwaysOn(),
       enrolled: !!this.#ctx!.config.get().computerId,
+      canOpenTemporarySession: !!this.#options.openTemporarySession,
       update,
       canSendDiagnostics:
         !!this.#ctx!.get<DiagnosticsModule>("Diagnostics").uploadUrl(),
@@ -182,6 +188,9 @@ export class TrayModule implements Module {
         break;
       case "open":
         ctx.get<SetupWindowModule>("SetupWindow").showApp();
+        break;
+      case "temporary-session":
+        this.#options.openTemporarySession?.();
         break;
       case "toggle-prevent-sleep": {
         const power = ctx.get<PowerGuardModule>("PowerGuard");

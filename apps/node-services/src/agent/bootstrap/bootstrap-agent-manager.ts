@@ -56,6 +56,7 @@ import {
 
 export interface BootstrapAgentManagerOptions {
   signal?: AbortSignal;
+  temporarySession?: boolean;
   runGracePeriodMs?: number;
   shutdownProgress?: ShutdownProgress;
   /** Per-Agent roots shared with Memory's projections (`contextHostRoot`). */
@@ -143,12 +144,16 @@ export const bootstrapAgentManager = async (
   const application = createAgentManagerApplication({
     // Reply rhythm sends through TeamHub's message sequences.
     replyRhythm: {},
-    proactive: {
-      client: createTeamHubProactiveClient({
-        baseUrl: options.roomBaseUrl,
-        serviceToken: options.serviceToken,
-      }),
-    },
+    ...(options.temporarySession
+      ? { temporarySession: true }
+      : {
+          proactive: {
+            client: createTeamHubProactiveClient({
+              baseUrl: options.roomBaseUrl,
+              serviceToken: options.serviceToken,
+            }),
+          },
+        }),
     taskProgress: {
       client: createTeamHubTaskProgressClient({
         baseUrl: options.roomBaseUrl,
