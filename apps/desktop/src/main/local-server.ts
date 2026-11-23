@@ -420,6 +420,38 @@ const GiB = 1024 * MiB;
 // a local model needs its own on top.
 export const LOCATION_FREE_BYTES = 20 * GiB;
 
+// Kept in the default home, even when services were installed elsewhere.
+function localServerRecordPath(home: string): string {
+  return path.join(home, "desktop", "local-server.json");
+}
+
+export async function readLocalServerRecord(
+  defaultHome: string,
+): Promise<LocalRecord | undefined> {
+  try {
+    const value = JSON.parse(
+      await readFile(localServerRecordPath(defaultHome), "utf8"),
+    ) as Partial<LocalRecord>;
+    return typeof value.repo === "string" && typeof value.origin === "string"
+      ? {
+          // Records from before the install location are in the default
+          // home.
+          home:
+            typeof value.home === "string" && path.isAbsolute(value.home)
+              ? value.home
+              : defaultHome,
+          repo: value.repo,
+          origin: value.origin,
+          ...(typeof value.version === "string"
+            ? { version: value.version }
+            : {}),
+        }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // Runs Linger on this computer: fetches a pinned Node 26 and the linger
 // source, drives the bundled installer through its local API and signs the
 // window in to the result. The desktop itself is the Computer, so the
@@ -2795,32 +2827,11 @@ export class LocalServerModule implements Module {
 
   // Kept in the default home, wherever the installation went.
   #recordFile(): string {
-    return this.#desktopDirectory("local-server.json");
+    return localServerRecordPath(this.#options.home);
   }
 
-  async #readRecord(): Promise<LocalRecord | undefined> {
-    try {
-      const value = JSON.parse(
-        await readFile(this.#recordFile(), "utf8"),
-      ) as Partial<LocalRecord>;
-      return typeof value.repo === "string" && typeof value.origin === "string"
-        ? {
-            // Records from before the install location are in the default
-            // home.
-            home:
-              typeof value.home === "string" && path.isAbsolute(value.home)
-                ? value.home
-                : this.#options.home,
-            repo: value.repo,
-            origin: value.origin,
-            ...(typeof value.version === "string"
-              ? { version: value.version }
-              : {}),
-          }
-        : undefined;
-    } catch {
-      return undefined;
-    }
+  #readRecord(): Promise<LocalRecord | undefined> {
+    return readLocalServerRecord(this.#options.home);
   }
 
   async #writeRecord(record: LocalRecord): Promise<void> {

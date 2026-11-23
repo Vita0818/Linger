@@ -40,8 +40,9 @@ Gateway and runs Agents. The daemon exits with the app.
 
 ## Temporary sessions
 
-The tray's **New Temporary Session** action uses the bundled installer as a
-supervisor. Set the guest's user data and service home before Electron starts,
+A normal launch of a packaged macOS build and the tray's **New Temporary
+Session** action use the bundled installer as a supervisor. `--regular`
+opens the persistent workspace. Set the guest's user data and service home before Electron starts,
 keep its workspace grant inside that root, and stop its owned services before
 disposing of the temporary directory. See [Temporary sessions](../../docs/temporary-sessions.md).
 

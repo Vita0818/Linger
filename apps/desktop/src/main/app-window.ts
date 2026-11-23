@@ -15,3 +15,18 @@ export function appWindow(state: {
 export function quitRequested(argv: readonly string[]): boolean {
   return argv.includes("--quit");
 }
+
+/** A supervised guest is already in its temporary session. */
+export function launchesTemporarySession(
+  argv: readonly string[],
+  supported: boolean,
+  supervised: boolean,
+): boolean {
+  return (
+    supported &&
+    !supervised &&
+    !quitRequested(argv) &&
+    !argv.includes("--regular") &&
+    !argv.includes("--background")
+  );
+}

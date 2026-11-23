@@ -1,9 +1,15 @@
 # Temporary sessions on macOS
 
-Choose **New Temporary Session** in the Linger tray menu to open a disposable
-local workspace. The Desktop uses the BYOK model endpoint already configured
-for its local installation. The model credential is passed through an
-owner-only file inside the temporary directory.
+Opening Linger on macOS starts a disposable local workspace. A new launch
+after closing the temporary window starts a new workspace. The Desktop uses
+the BYOK model endpoint already configured for its local installation. The
+model credential is passed through an owner-only file inside the temporary
+directory.
+
+To open the regular workspace, run
+`open -n /Applications/Linger.app --args --regular`. If the temporary launch
+needs configuration, its error dialog also offers **Open Regular Linger**.
+The regular app's tray keeps **New Temporary Session** available.
 
 The temporary window starts its own local Linger services, Computer
 connection, model gateway, runtime and desktop profile. Its chat messages, runtime

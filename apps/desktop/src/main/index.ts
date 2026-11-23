@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, renameSync } from "node:fs";
+import { existsSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,7 +25,7 @@ import {
   type TemporarySessionPaths,
 } from "@linger/local-installation/temporary-session";
 
-import { quitRequested } from "./app-window.js";
+import { launchesTemporarySession, quitRequested } from "./app-window.js";
 import { CredentialStore } from "./computer-credential.js";
 import {
   ComputerDaemonModule,
@@ -38,6 +38,7 @@ import { DiagnosticsModule } from "./diagnostics.js";
 import { EnrollmentModule } from "./enrollment.js";
 import {
   LocalServerModule,
+  readLocalServerRecord,
   signInWithPassword,
   type SourceArchive,
   type SourceDependencies,
@@ -66,7 +67,10 @@ declare const __DESKTOP_VERSION__: string;
 declare const __SOURCE_ARCHIVE__: SourceArchive | null;
 declare const __SOURCE_DEPENDENCIES__: SourceDependencies | null;
 const VERSION = __DESKTOP_VERSION__;
+const APP_USER_MODEL_ID = "com.simplexai.linger.desktop.preview";
 const here = path.dirname(fileURLToPath(import.meta.url));
+const supportsTemporarySession =
+  app.isPackaged && process.platform === "darwin" && !!__SOURCE_ARCHIVE__;
 
 let userDataMove: UserDataMove | undefined;
 let temporarySession: TemporarySessionPaths | undefined;
@@ -79,42 +83,55 @@ try {
   app.exit(1);
   throw new Error("Invalid temporary session.");
 }
-if (temporarySession) {
-  app.setPath("userData", temporarySession.userData);
-  app.setPath("sessionData", temporarySession.userData);
-} else if (process.env.LINGER_DESKTOP_USER_DATA) {
-  app.setPath("userData", path.resolve(process.env.LINGER_DESKTOP_USER_DATA));
-} else if (app.isPackaged) {
-  // The installed app's data folder holds the Computer's credential,
-  // identity and enrollment. Move installs under the old name once.
-  const userData = path.join(app.getPath("appData"), "Linger");
-  try {
-    userDataMove = moveLegacyUserData(
-      path.join(app.getPath("appData"), "Simplex"),
-      userData,
-    );
-  } catch (error) {
-    dialog.showErrorBox(
-      "Linger could not start",
-      `Could not move the app data folder to ${userData}: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    app.exit(1);
-  }
-  app.setPath("userData", userData);
+if (
+  launchesTemporarySession(
+    process.argv,
+    supportsTemporarySession,
+    !!temporarySession,
+  )
+) {
+  launchDefaultTemporarySession();
+} else {
+  startDesktop();
 }
 
-// Windows shows notifications only for an app id that a Start menu shortcut
-// carries. The installer makes the shortcut; the app writes the id into it.
-const APP_USER_MODEL_ID = "com.simplexai.linger.desktop.preview";
-if (process.platform === "win32") app.setAppUserModelId(APP_USER_MODEL_ID);
+function startDesktop(): void {
+  if (temporarySession) {
+    app.setPath("userData", temporarySession.userData);
+    app.setPath("sessionData", temporarySession.userData);
+  } else if (process.env.LINGER_DESKTOP_USER_DATA) {
+    app.setPath("userData", path.resolve(process.env.LINGER_DESKTOP_USER_DATA));
+  } else if (app.isPackaged) {
+    // The installed app's data folder holds the Computer's credential,
+    // identity and enrollment. Move installs under the old name once.
+    const userData = path.join(app.getPath("appData"), "Linger");
+    try {
+      userDataMove = moveLegacyUserData(
+        path.join(app.getPath("appData"), "Simplex"),
+        userData,
+      );
+    } catch (error) {
+      dialog.showErrorBox(
+        "Linger could not start",
+        `Could not move the app data folder to ${userData}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      app.exit(1);
+    }
+    app.setPath("userData", userData);
+  }
 
-// `--quit` (the uninstaller) asks a running Linger to quit, and starts
-// nothing when none runs.
-if (!app.requestSingleInstanceLock() || quitRequested(process.argv)) {
-  app.quit();
-} else {
-  registerAppScheme();
-  void app.whenReady().then(main);
+  // Windows shows notifications only for an app id that a Start menu shortcut
+  // carries. The installer makes the shortcut; the app writes the id into it.
+  if (process.platform === "win32") app.setAppUserModelId(APP_USER_MODEL_ID);
+
+  // `--quit` (the uninstaller) asks a running Linger to quit, and starts
+  // nothing when none runs.
+  if (!app.requestSingleInstanceLock() || quitRequested(process.argv)) {
+    app.quit();
+  } else {
+    registerAppScheme();
+    void app.whenReady().then(main);
+  }
 }
 
 async function main(): Promise<void> {
@@ -354,10 +371,7 @@ async function main(): Promise<void> {
     new TrayModule({
       quit: () => void quit(),
       temporarySession: !!temporarySession,
-      ...(app.isPackaged &&
-      process.platform === "darwin" &&
-      __SOURCE_ARCHIVE__ &&
-      !temporarySession
+      ...(supportsTemporarySession && !temporarySession
         ? {
             openTemporarySession: () =>
               openTemporarySession(localServer.installationHome()),
@@ -556,7 +570,67 @@ function moveLegacyUserData(
   };
 }
 
+// The default entry owns only this launcher and waits for the existing
+// installer supervisor. The guest starts with its own Desktop profile.
+function launchDefaultTemporarySession(): void {
+  try {
+    const directory = mkdtempSync(
+      path.join(os.tmpdir(), "linger-private-launch-"),
+    );
+    app.once("quit", () => rmSync(directory, { recursive: true, force: true }));
+    app.setPath("userData", directory);
+    app.setPath("sessionData", directory);
+    app.setActivationPolicy("accessory");
+  } catch {
+    dialog.showErrorBox("Linger", "Could not prepare the temporary launcher.");
+    app.exit(1);
+    return;
+  }
+
+  void app.whenReady().then(async () => {
+    let status = 0;
+    try {
+      const defaultHome = lingerHome();
+      const record = await readLocalServerRecord(defaultHome);
+      await superviseTemporarySession(record?.home ?? defaultHome);
+    } catch {
+      status = 1;
+      const { response } = await dialog.showMessageBox({
+        type: "error",
+        message: "The temporary session could not start or close cleanly.",
+        detail:
+          "You can open regular Linger to check the configured BYOK model.",
+        buttons: ["Close", "Open Regular Linger"],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      if (response === 1) {
+        const regular = spawn(process.execPath, ["--regular"], {
+          detached: true,
+          stdio: "ignore",
+          windowsHide: true,
+        });
+        regular.once("error", () =>
+          dialog.showErrorBox("Linger", "Could not open regular Linger."),
+        );
+        regular.unref();
+      }
+    } finally {
+      app.exit(status);
+    }
+  });
+}
+
 function openTemporarySession(home: string): void {
+  void superviseTemporarySession(home).catch(() =>
+    dialog.showErrorBox(
+      "Linger",
+      "The temporary session could not start or close cleanly. Check your BYOK model settings.",
+    ),
+  );
+}
+
+function superviseTemporarySession(home: string): Promise<void> {
   const child = spawn(
     process.execPath,
     [
@@ -572,14 +646,12 @@ function openTemporarySession(home: string): void {
       env: { ...temporarySessionEnvironment(), ELECTRON_RUN_AS_NODE: "1" },
     },
   );
-  const failed = () =>
-    dialog.showErrorBox(
-      "Linger",
-      "The temporary session could not start or close cleanly. Check your BYOK model settings.",
-    );
-  child.once("error", failed);
-  child.once("exit", (code) => {
-    if (code !== 0) failed();
-  });
   child.unref();
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error("Temporary Desktop supervisor failed."));
+    });
+  });
 }
