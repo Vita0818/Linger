@@ -1,7 +1,10 @@
 import { spawn } from "node:child_process";
-import { rm } from "node:fs/promises";
 
-import { stopLocalmodels } from "@linger/local-installation/localmodels-tool";
+import { removeRetrying } from "@linger/local-installation/fs-retry";
+import {
+  stopLocalmodels,
+  unlockLocalmodelsKitsForRemoval,
+} from "@linger/local-installation/localmodels-tool";
 import { freePort } from "@linger/local-installation/ports";
 import {
   prepareTemporarySession,
@@ -34,6 +37,7 @@ async function start(
       cwd: paths.root,
       env: { ...temporarySessionEnvironment(), ...env },
       stdio: "ignore",
+      windowsHide: true,
     },
   );
   return new Promise((resolve, reject) => {
@@ -80,7 +84,8 @@ export async function runTemporarySession(
     // A running service may still own the private database. Clean its storage
     // only after the stop succeeded.
     await (dependencies.stop ?? stop)(paths, env);
-    await rm(paths.root, { recursive: true, force: true });
+    await unlockLocalmodelsKitsForRemoval(paths.home);
+    await removeRetrying(paths.root);
   }
   if (status !== 0)
     throw new Error("The temporary session exited unexpectedly.");

@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -49,6 +49,9 @@ afterEach(async () => {
 describe("temporary Desktop supervision", () => {
   it("stops the disposable instance before cleaning its data and leaves ordinary storage alone", async () => {
     const ordinary = await ordinaryHome();
+    const ordinaryKit = path.join(ordinary.home, "sealed");
+    await privateDirectory(ordinaryKit);
+    if (process.platform !== "win32") await chmod(ordinaryKit, 0o500);
     let root = "";
     const phases: string[] = [];
     let gateway: string | undefined;
@@ -69,6 +72,14 @@ describe("temporary Desktop supervision", () => {
           path.join(paths.home, "history.json"),
           "private history",
         );
+        if (process.platform !== "win32") {
+          const kits = path.join(paths.home, "tools", "localmodels");
+          const sealed = path.join(kits, "fixture-kit");
+          await privateDirectory(sealed);
+          await atomicPrivate(path.join(sealed, "python"), "sealed tool");
+          await chmod(sealed, 0o500);
+          await symlink(ordinaryKit, path.join(kits, "ordinary-link"), "dir");
+        }
         phases.push("exit");
         return 0;
       },
@@ -82,6 +93,8 @@ describe("temporary Desktop supervision", () => {
       },
     });
     expect(phases).toEqual(["exit", "stop"]);
+    if (process.platform !== "win32")
+      expect((await lstat(ordinaryKit)).mode & 0o777).toBe(0o500);
     await expect(lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(ordinary.history, "utf8")).toBe("ordinary history");
   });

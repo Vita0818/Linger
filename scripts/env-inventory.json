@@ -128,6 +128,11 @@
         "SIMPLEX_REGION"
       ]
     },
+    "temporary-session-gateway": {
+      "owner": "runtime",
+      "description": "The macOS temporary session supplies a loopback gateway port and private configuration and tools directories to localmodels.",
+      "names": ["LOCALMODELS_BIFROST_ADDR"]
+    },
     "voice-workers": {
       "owner": "runtime",
       "description": "Private port assigned by the node-services voice supervisor to its ASR, recorder and Live child processes, and the NODE_PATH it prepends with the downloaded model packages; never a user configuration setting.",

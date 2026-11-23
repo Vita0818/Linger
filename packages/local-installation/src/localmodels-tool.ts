@@ -252,6 +252,23 @@ async function setKitMode(directory: string, sealed: boolean) {
   }
   await chmod(directory, sealed ? 0o500 : 0o700);
 }
+/** Reopen the sealed directories before removing an owned installation. */
+export async function unlockLocalmodelsKitsForRemoval(
+  home: string,
+): Promise<void> {
+  const tools = path.join(home, "tools");
+  const kits = path.join(tools, "localmodels");
+  for (const directory of [home, tools, kits]) {
+    try {
+      if (!(await lstat(directory)).isDirectory()) return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+  }
+  await setKitMode(kits, false);
+}
+
 /** The Windows read-only attribute prevents CPython from replacing a verified cache file. */
 async function sealWindowsFiles(writable: string[]) {
   for (let offset = 0; offset < writable.length; offset += CONCURRENCY)
