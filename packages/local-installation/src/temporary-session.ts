@@ -1,5 +1,5 @@
 import { lstatSync, realpathSync } from "node:fs";
-import { mkdtemp, rm, unlink } from "node:fs/promises";
+import { mkdtemp, realpath, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { defaultByokEndpoint } from "@linger/service-kit/byok-endpoint";
@@ -62,21 +62,22 @@ export function temporarySessionFromArgs(
   if (!path.isAbsolute(root) || !path.basename(root).startsWith(ROOT_PREFIX))
     throw new Error("Invalid temporary session directory.");
   const info = lstatSync(root);
+  const directory = realpathSync(root);
   if (
     !info.isDirectory() ||
     info.isSymbolicLink() ||
-    path.dirname(realpathSync(root)) !== realpathSync(tmpdir()) ||
+    path.dirname(directory) !== realpathSync(tmpdir()) ||
     (process.platform !== "win32" &&
       (info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0))
   )
     throw new Error("Temporary sessions need a private temporary directory.");
-  const paths = pathsFor(root);
-  for (const directory of [paths.home, paths.userData, paths.workspace]) {
-    const child = lstatSync(directory);
+  const paths = pathsFor(directory);
+  for (const childDirectory of [paths.home, paths.userData, paths.workspace]) {
+    const child = lstatSync(childDirectory);
     if (
       !child.isDirectory() ||
       child.isSymbolicLink() ||
-      path.dirname(realpathSync(directory)) !== realpathSync(root) ||
+      path.dirname(realpathSync(childDirectory)) !== directory ||
       (process.platform !== "win32" &&
         (child.uid !== process.getuid?.() || (child.mode & 0o077) !== 0))
     )
@@ -115,7 +116,9 @@ export async function prepareTemporarySession(
   regularHome: string,
 ): Promise<TemporarySessionPaths> {
   const model = await activeByokModel(regularHome);
-  const paths = pathsFor(await mkdtemp(path.join(tmpdir(), ROOT_PREFIX)));
+  // Runtime tools reject symlinked ancestors, including the macOS /var alias.
+  const base = await realpath(tmpdir());
+  const paths = pathsFor(await mkdtemp(path.join(base, ROOT_PREFIX)));
   try {
     await privateDirectory(paths.root);
     await Promise.all(

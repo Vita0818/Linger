@@ -1,8 +1,16 @@
-import { lstat, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { localmodelsStateDirectory } from "./localmodels-tool.js";
 import { atomicPrivate, privateDirectory } from "./private-files.js";
@@ -44,6 +52,7 @@ async function ordinaryModelHome() {
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const root of testRoots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
@@ -69,6 +78,29 @@ describe("temporary session storage", () => {
     await expect(lstat(paths.setup)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(ordinary.credentials, "utf8")).toBe(ordinary.saved);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "uses the physical directory for the runtime beneath a temporary alias",
+    async () => {
+      const ordinary = await ordinaryModelHome();
+      const fixture = await mkdtemp(path.join(tmpdir(), "linger-temp-alias-"));
+      testRoots.push(fixture);
+      const actual = path.join(fixture, "actual");
+      const alias = path.join(fixture, "alias");
+      await mkdir(actual, { mode: 0o700 });
+      await symlink(actual, alias, "dir");
+      vi.stubEnv("TMPDIR", alias);
+
+      const paths = await prepareTemporarySession(ordinary.home);
+      expect(path.dirname(paths.root)).toBe(await realpath(actual));
+      expect(
+        temporarySessionFromArgs([
+          TEMPORARY_SESSION_ARGUMENT +
+            path.join(alias, path.basename(paths.root)),
+        ]),
+      ).toEqual(paths);
+    },
+  );
 
   it("rejects missing or redirected private storage", async () => {
     expect(temporarySessionFromArgs([])).toBeUndefined();
