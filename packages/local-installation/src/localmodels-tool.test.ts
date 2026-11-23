@@ -23,6 +23,7 @@ import { requestUrlText } from "@linger/service-kit";
 import { afterEach, expect, test, vi } from "vitest";
 import {
   ensureLocalmodelsTool,
+  reuseTemporaryModelTools,
   runLocalmodels,
   stopLocalmodels,
   validateToolSource,
@@ -146,6 +147,88 @@ test("reuses only a complete checksum-verified private upstream kit", async () =
     ),
   ).rejects.toThrow(/checksum|size|SHA/i);
 });
+test("seeds published components without copying session files from the regular home", async () => {
+  if (process.platform === "win32") return;
+  const f = await fixture();
+  const binaryName = "bifrost-http-fixture";
+  const lock = JSON.stringify({
+    bifrost: {
+      builds: [
+        {
+          platform: process.platform,
+          arch: process.arch,
+          name: binaryName,
+          sha256: hash("gateway"),
+        },
+      ],
+    },
+    pi: { version: "1.5.2" },
+  });
+  const relativeLock = "modules/localmodels/tools.json";
+  const manifestFile = path.join(f.directory, "tool.json");
+  const manifest = JSON.parse(await readFile(manifestFile, "utf8"));
+  manifest.assets[relativeLock] = hash(lock);
+  const body = JSON.stringify(manifest);
+  f.source.manifestSha256 = hash(body);
+  await writeFile(manifestFile, body);
+  await writeFile(path.join(f.directory, relativeLock), lock);
+  await writeFile(path.join(f.directory, "session.json"), "unlisted state");
+  const archives = path.join(f.home, "archives");
+  await mkdir(archives);
+  await writeFile(path.join(archives, binaryName), "gateway");
+  await writeFile(path.join(archives, "owned.json"), "regular configuration");
+  const piPath = "runtime/harness/tools/pi/1.5.2";
+  const piRoot = path.join(f.home, piPath);
+  await mkdir(path.join(piRoot, "package"), { recursive: true });
+  await writeFile(
+    path.join(piRoot, "localmodels-runtime.json"),
+    JSON.stringify({
+      schema: "localmodels.runtime-owned/v1",
+      planId: "c".repeat(64),
+    }),
+  );
+  await writeFile(path.join(piRoot, "pi"), "standalone wrapper");
+  await writeFile(path.join(piRoot, "node"), "node binary");
+  await writeFile(path.join(piRoot, "package", "cli.js"), "pi source");
+  await writeFile(path.join(piRoot, "sessions.json"), "running state");
+
+  const temporaryHome = await mkdtemp(
+    path.join(os.tmpdir(), "linger-model-guest-"),
+  );
+  roots.push(temporaryHome);
+  const tools = path.join(temporaryHome, "gateway-tools");
+  await reuseTemporaryModelTools(f.home, temporaryHome, tools, {
+    source: f.source,
+    archives,
+    runtime: "pi",
+  });
+  const kit = path.join(temporaryHome, "tools/localmodels", f.source.sha256);
+  expect(await readFile(path.join(kit, "python/python"), "utf8")).toBe(
+    "python",
+  );
+  await expect(stat(path.join(kit, "session.json"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+  expect(await readdir(path.join(tools, ".archives"))).toEqual([binaryName]);
+  expect(
+    await readFile(path.join(tools, ".archives", binaryName), "utf8"),
+  ).toBe("gateway");
+  if (process.platform === "darwin") {
+    expect(await readFile(path.join(temporaryHome, piPath, "pi"), "utf8")).toBe(
+      "standalone wrapper",
+    );
+    await expect(
+      stat(path.join(temporaryHome, piPath, "sessions.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  }
+  expect(await readFile(path.join(f.directory, "session.json"), "utf8")).toBe(
+    "unlisted state",
+  );
+  expect(await readFile(path.join(archives, "owned.json"), "utf8")).toBe(
+    "regular configuration",
+  );
+});
+
 test("hashes a verified kit again only where an asset's size or time changed", async () => {
   const f = await fixture();
   const file = path.join(f.directory, "modules/localmodels/__init__.py");

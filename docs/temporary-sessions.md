@@ -4,7 +4,9 @@ Opening Linger on macOS starts a disposable local workspace. A new launch
 after closing the temporary window starts a new workspace. The Desktop uses
 the BYOK model endpoint already configured for its local installation. The
 model credential is passed through an owner-only file inside the temporary
-directory.
+directory. When available, the initial setup copies the checksum-verified
+localmodels tool files and matching Bifrost archive into the new workspace.
+A matching managed Pi installation can supply its program files as well.
 
 To open the regular workspace, run
 `open -n /Applications/Linger.app --args --regular`. If the temporary launch

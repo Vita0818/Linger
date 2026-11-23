@@ -75,7 +75,7 @@ export async function runTemporarySession(
   dependencies: TemporarySessionDependencies = {},
 ): Promise<void> {
   const paths = await prepareTemporarySession(regularHome);
-  const env = temporarySessionModelEnvironment(paths.home);
+  const env: NodeJS.ProcessEnv = temporarySessionModelEnvironment(paths.home);
   let status: number | null;
   try {
     env.LOCALMODELS_BIFROST_ADDR = `127.0.0.1:${await freePort(new Set())}`;

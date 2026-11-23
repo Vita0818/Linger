@@ -1,6 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { lstat, readdir, readFile, rm, chmod } from "node:fs/promises";
+import { constants, createReadStream } from "node:fs";
+import {
+  lstat,
+  readdir,
+  readFile,
+  rm,
+  chmod,
+  copyFile,
+  mkdir,
+  cp,
+} from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { x as extract } from "tar";
 import { downloadInRegion, resolveRegion } from "./region.js";
@@ -16,6 +26,7 @@ import {
   type PublishedServiceSource,
 } from "./published-source.js";
 import type { InstallerEvent } from "./events.js";
+import type { NativeRuntime } from "./managed-runtimes.js";
 import { renameRetrying } from "./fs-retry.js";
 export type LocalmodelsToolSource = PublishedServiceSource & {
   sourceCommit: string;
@@ -304,6 +315,151 @@ async function installedKit(directory: string, source: LocalmodelsToolSource) {
   if (tool.hashed > 0) await writeStamps(directory, source, tool.stamps);
   return location(tool);
 }
+/** Seed only the published tool files and the matching Bifrost archive. The
+ * temporary installer still verifies what it uses in the private directories. */
+export async function reuseTemporaryModelTools(
+  regularHome: string,
+  temporaryHome: string,
+  toolsDirectory: string,
+  options: {
+    source?: LocalmodelsToolSource;
+    archives?: string;
+    runtime?: NativeRuntime;
+  } = {},
+): Promise<void> {
+  const source = options.source ?? pinnedToolSource();
+  if (!source) return;
+  const from = kitDirectory(regularHome, source);
+  const to = kitDirectory(temporaryHome, source);
+  let created = false;
+  let verified: Awaited<ReturnType<typeof verify>>;
+  try {
+    const info = await lstat(from);
+    if (!info.isDirectory() || info.uid !== process.getuid?.()) return;
+    verified = await verify(from, source);
+    await privateDirectory(path.dirname(to));
+    await mkdir(to, { mode: 0o700 });
+    created = true;
+    const files = ["tool.json", ...Object.keys(verified.stamps)];
+    for (let offset = 0; offset < files.length; offset += CONCURRENCY) {
+      const copied = await Promise.allSettled(
+        files.slice(offset, offset + CONCURRENCY).map(async (name) => {
+          const destination = path.join(to, name);
+          await mkdir(path.dirname(destination), {
+            recursive: true,
+            mode: 0o700,
+          });
+          await copyFile(
+            path.join(from, name),
+            destination,
+            constants.COPYFILE_FICLONE,
+          );
+        }),
+      );
+      if (copied.some((outcome) => outcome.status === "rejected"))
+        throw new Error("Could not copy the published tool files.");
+    }
+  } catch {
+    if (created) await rm(to, { recursive: true, force: true });
+    return;
+  }
+
+  const lockFile = path.join(verified.moduleDir, "localmodels", "tools.json");
+  if (!Object.hasOwn(verified.stamps, path.relative(from, lockFile))) return;
+  try {
+    const lock = JSON.parse(await readFile(lockFile, "utf8")) as {
+      bifrost?: { builds?: BifrostArchive[] };
+      pi?: { version?: string };
+    };
+    const pin = lock.bifrost?.builds?.find(
+      (build) =>
+        build.platform === process.platform && build.arch === process.arch,
+    );
+    // Either component may be downloaded normally if the local copy is unavailable.
+    await Promise.allSettled([
+      pin &&
+        reuseBifrostArchive(
+          pin,
+          options.archives ??
+            path.join(homedir(), ".local/share/localmodels/tools/.archives"),
+          toolsDirectory,
+        ),
+      options.runtime === "pi" && lock.pi?.version
+        ? reuseManagedPi(regularHome, temporaryHome, lock.pi.version)
+        : undefined,
+    ]);
+  } catch {
+    // A cold install can still fetch the pinned runtime and gateway.
+  }
+}
+
+interface BifrostArchive {
+  platform: string;
+  arch: string;
+  name: string;
+  sha256: string;
+}
+
+async function reuseBifrostArchive(
+  pin: BifrostArchive,
+  archives: string,
+  toolsDirectory: string,
+): Promise<void> {
+  if (!/^bifrost-http-[a-zA-Z0-9_.-]+$/.test(pin.name)) return;
+  const previous = path.join(archives, pin.name);
+  if (
+    !(await lstat(previous)).isFile() ||
+    (await digest(previous)) !== pin.sha256
+  )
+    return;
+  const destination = path.join(toolsDirectory, ".archives");
+  await privateDirectory(destination);
+  await copyFile(
+    previous,
+    path.join(destination, pin.name),
+    constants.COPYFILE_FICLONE,
+  );
+}
+
+async function reuseManagedPi(
+  regularHome: string,
+  temporaryHome: string,
+  version: string,
+): Promise<void> {
+  if (process.platform !== "darwin" || !/^\d+\.\d+\.\d+$/.test(version)) return;
+  const relative = path.join("runtime", "harness", "tools", "pi", version);
+  const from = path.join(regularHome, relative);
+  const to = path.join(temporaryHome, relative);
+  const marker = JSON.parse(
+    await readFile(await regular(from, "localmodels-runtime.json"), "utf8"),
+  ) as { schema?: string; planId?: string };
+  if (
+    marker.schema !== "localmodels.runtime-owned/v1" ||
+    !/^[a-f0-9]{64}$/.test(marker.planId ?? "")
+  )
+    return;
+
+  const files = ["localmodels-runtime.json", "node", "package", "pi"];
+  await privateDirectory(path.dirname(to));
+  try {
+    // Copy only the program and its install receipt. The runtime installer
+    // checks the version and its extension support before choosing reuse.
+    await cp(from, to, {
+      recursive: true,
+      mode: constants.COPYFILE_FICLONE,
+      filter: async (entry) => {
+        const parts = path.relative(from, entry).split(path.sep);
+        if (parts[0] && !files.includes(parts[0])) return false;
+        if ((await lstat(entry)).isSymbolicLink())
+          throw new Error("Linked Pi install.");
+        return true;
+      },
+    });
+  } catch {
+    await rm(to, { recursive: true, force: true });
+  }
+}
+
 async function prepareLocalmodelsTool(
   home: string,
   options: Options = {},

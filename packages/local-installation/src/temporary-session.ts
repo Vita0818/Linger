@@ -9,7 +9,10 @@ import {
   validateByokConfiguration,
   type ByokConfiguration,
 } from "./byok-source.js";
-import { localmodelsStateDirectory } from "./localmodels-tool.js";
+import {
+  localmodelsStateDirectory,
+  reuseTemporaryModelTools,
+} from "./localmodels-tool.js";
 import type { NativeRuntime } from "./managed-runtimes.js";
 import {
   atomicPrivate,
@@ -118,6 +121,17 @@ export async function prepareTemporarySession(
     await Promise.all(
       [paths.home, paths.userData, paths.workspace].map(privateDirectory),
     );
+    const { LOCALMODELS_TOOLS_DIR } = temporarySessionModelEnvironment(
+      paths.home,
+    );
+    await reuseTemporaryModelTools(
+      regularHome,
+      paths.home,
+      LOCALMODELS_TOOLS_DIR,
+      {
+        runtime: model.runtime,
+      },
+    );
     // The model credential never goes in process arguments or the environment.
     await atomicPrivate(paths.setup, JSON.stringify(model));
     return paths;
@@ -139,9 +153,7 @@ export async function takeTemporarySessionModel(
 }
 
 /** The kit's gateway config and ownership manifest live outside LOCALMODELS_STATE. */
-export function temporarySessionModelEnvironment(
-  home: string,
-): Record<string, string> {
+export function temporarySessionModelEnvironment(home: string) {
   const root = path.dirname(localmodelsStateDirectory(home));
   return {
     LOCALMODELS_TOOLS_DIR: path.join(root, "tools"),
