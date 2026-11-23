@@ -2203,10 +2203,16 @@ export class LocalServerModule implements Module {
       );
       return;
     }
+    // The child inherits the physical working directory. Relative paths
+    // computed from aliases such as macOS /var can reach the wrong parent.
+    const [directory, archive] = await Promise.all([
+      realpath(unpacked),
+      realpath(file),
+    ]);
     await run(
       tarCommand(),
-      ["-xf", path.relative(unpacked, file), "--strip-components=1"],
-      unpacked,
+      ["-xf", path.relative(directory, archive), "--strip-components=1"],
+      directory,
       signal,
     );
   }

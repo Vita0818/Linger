@@ -1402,6 +1402,41 @@ describe("LocalServerModule", () => {
     expect(existsSync(path.join(repo, "scripts/source-native.mjs"))).toBe(true);
   });
 
+  it.skipIf(process.platform === "win32")(
+    "unpacks an archive into a symlinked installation directory",
+    async () => {
+      const root = tempDirectory();
+      const archive = sourceArchive(root);
+      const physicalRoot = path.join(root, "physical", "location");
+      mkdirSync(physicalRoot, { recursive: true });
+      const alias = path.join(root, "alias");
+      symlinkSync(physicalRoot, alias, "dir");
+      const f = fixture(
+        {
+          sourceArchive: {
+            file: "../../linger.tar.gz",
+            sha256: archive.sha256,
+          },
+        },
+        {},
+        undefined,
+        installerApi(),
+        alias,
+      );
+      await f.host.start();
+      await f.module.begin();
+      const repo = path.join(
+        f.home,
+        "desktop",
+        "source",
+        archive.sha256.slice(0, 16),
+      );
+      expect(existsSync(path.join(repo, "scripts/source-native.mjs"))).toBe(
+        true,
+      );
+    },
+  );
+
   it("hands Native the TeamHub binaries built from its source package", async () => {
     const f = fixture();
     const archive = sourceArchive(f.root);
