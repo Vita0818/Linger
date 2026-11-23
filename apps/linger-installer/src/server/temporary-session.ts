@@ -16,9 +16,11 @@ import {
 import { stopDesktopInstallation } from "./stop.js";
 
 interface TemporarySessionDependencies {
+  desktopExecutable?: string;
   start?: (
     paths: TemporarySessionPaths,
     env: NodeJS.ProcessEnv,
+    desktopExecutable: string,
   ) => Promise<number | null>;
   stop?: (
     paths: TemporarySessionPaths,
@@ -29,9 +31,10 @@ interface TemporarySessionDependencies {
 async function start(
   paths: TemporarySessionPaths,
   env: NodeJS.ProcessEnv,
+  desktopExecutable: string,
 ): Promise<number | null> {
   const child = spawn(
-    process.execPath,
+    desktopExecutable,
     [TEMPORARY_SESSION_ARGUMENT + paths.root],
     {
       cwd: paths.root,
@@ -79,7 +82,11 @@ export async function runTemporarySession(
   let status: number | null;
   try {
     env.LOCALMODELS_BIFROST_ADDR = `127.0.0.1:${await freePort(new Set())}`;
-    status = await (dependencies.start ?? start)(paths, env);
+    status = await (dependencies.start ?? start)(
+      paths,
+      env,
+      dependencies.desktopExecutable ?? process.execPath,
+    );
   } finally {
     // A running service may still own the private database. Clean its storage
     // only after the stop succeeded.

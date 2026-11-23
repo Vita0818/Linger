@@ -282,3 +282,22 @@ it("tells the desktop client by code why a refused folder kept the keys unsaved"
     vi.resetModules();
   }
 });
+
+it("accepts an explicit bundled Desktop executable for the temporary supervisor", async () => {
+  const { parseInstallerArguments } = await import("./main.js");
+  const executable = path.resolve("Linger.app/Contents/MacOS/Linger");
+  expect(
+    parseInstallerArguments([
+      "--temporary-desktop",
+      "--desktop-executable",
+      executable,
+    ]),
+  ).toMatchObject({ temporaryDesktop: true, desktopExecutable: executable });
+  expect(() =>
+    parseInstallerArguments([
+      "--temporary-desktop",
+      "--desktop-executable",
+      "Linger",
+    ]),
+  ).toThrow("Desktop executable must be absolute.");
+});

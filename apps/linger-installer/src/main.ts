@@ -27,6 +27,7 @@ export function parseInstallerArguments(args: string[]) {
     stop?: boolean;
     stopLocalModels?: boolean;
     temporaryDesktop?: boolean;
+    desktopExecutable?: string;
   } = {
     home: lingerHome(),
   };
@@ -79,6 +80,7 @@ export function parseInstallerArguments(args: string[]) {
         "--source-repo",
         "--instance",
         "--inspect-target",
+        "--desktop-executable",
       ].includes(flag ?? "")
     )
       throw new Error("Invalid installer option.");
@@ -89,7 +91,11 @@ export function parseInstallerArguments(args: string[]) {
     else if (flag === "--inspect-target")
       options.inspectTarget = path.resolve(value);
     else if (flag === "--source-repo") options.sourceRepo = path.resolve(value);
-    else if (flag === "--instance") {
+    else if (flag === "--desktop-executable") {
+      if (!path.isAbsolute(value))
+        throw new Error("Desktop executable must be absolute.");
+      options.desktopExecutable = value;
+    } else if (flag === "--instance") {
       if (!/^[a-z][a-z0-9-]{0,39}$/.test(value))
         throw new Error("Invalid instance name.");
       options.instanceName = value;
@@ -111,6 +117,8 @@ export function parseInstallerArguments(args: string[]) {
     !options.temporaryDesktop
   )
     throw new Error("The installer needs a source checkout (--source-repo).");
+  if (options.desktopExecutable && !options.temporaryDesktop)
+    throw new Error("A desktop executable requires --temporary-desktop.");
   if (options.inspectTarget && !options.inspect)
     throw new Error("An inspection target requires --inspect.");
   if (options.resume && !options.instanceName)
@@ -447,7 +455,11 @@ if (
         throw new Error("Temporary Desktop sessions require macOS.");
       const { runTemporarySession } =
         await import("./server/temporary-session.js");
-      await runTemporarySession(options.home);
+      await runTemporarySession(options.home, {
+        ...(options.desktopExecutable
+          ? { desktopExecutable: options.desktopExecutable }
+          : {}),
+      });
     } catch {
       // The parent receives only a status, never model credentials or content.
       process.exitCode = 1;

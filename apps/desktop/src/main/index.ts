@@ -592,7 +592,9 @@ function launchDefaultTemporarySession(): void {
     try {
       const defaultHome = lingerHome();
       const record = await readLocalServerRecord(defaultHome);
-      await superviseTemporarySession(record?.home ?? defaultHome);
+      await superviseTemporarySession(record?.home ?? defaultHome, {
+        keepLauncherAlive: true,
+      });
     } catch {
       status = 1;
       const { response } = await dialog.showMessageBox({
@@ -630,23 +632,39 @@ function openTemporarySession(home: string): void {
   );
 }
 
-function superviseTemporarySession(home: string): Promise<void> {
+function superviseTemporarySession(
+  home: string,
+  options: { keepLauncherAlive?: boolean } = {},
+): Promise<void> {
+  // The bundled Node keeps supervision independent of macOS application
+  // activation for the launcher and the temporary window.
+  const node = path.join(
+    here,
+    "../installer/native",
+    `runtime-${process.platform}-${process.arch}`,
+    "node/bin/node",
+  );
+  const useBundledNode = existsSync(node);
   const child = spawn(
-    process.execPath,
+    useBundledNode ? node : process.execPath,
     [
       path.join(here, "../installer/installer.js"),
       "--temporary-desktop",
       "--home",
       home,
+      ...(useBundledNode ? ["--desktop-executable", process.execPath] : []),
     ],
     {
       detached: true,
       windowsHide: true,
       stdio: "ignore",
-      env: { ...temporarySessionEnvironment(), ELECTRON_RUN_AS_NODE: "1" },
+      env: {
+        ...temporarySessionEnvironment(),
+        ...(!useBundledNode ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
+      },
     },
   );
-  child.unref();
+  if (!options.keepLauncherAlive) child.unref();
   return new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", (code) => {
