@@ -311,6 +311,7 @@ export interface LocalServerOptions {
   // installation goes.
   readonly home: string;
   readonly temporarySession?: boolean;
+  readonly environment?: NodeJS.ProcessEnv;
   // This app's version, recorded with the source package it unpacks.
   readonly version: string;
   // The bundled installer (installer.js, web/, native-process-worker.mjs).
@@ -460,6 +461,7 @@ export class LocalServerModule implements Module {
   readonly name = "LocalServer";
   readonly dependsOn = ["WindowManager", "Enrollment"];
   readonly #options: LocalServerOptions;
+  readonly #environment: NodeJS.ProcessEnv;
   #ctx: ModuleContext | undefined;
   #phase: LocalServerPhase = "idle";
   #message = "";
@@ -509,6 +511,7 @@ export class LocalServerModule implements Module {
 
   constructor(options: LocalServerOptions) {
     this.#options = options;
+    this.#environment = options.environment ?? process.env;
     this.#home = options.home;
   }
 
@@ -617,7 +620,7 @@ export class LocalServerModule implements Module {
           // A detached Windows process otherwise opens its own console window.
           windowsHide: true,
           stdio: ["ignore", output, output],
-          env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+          env: { ...this.#environment, ELECTRON_RUN_AS_NODE: "1" },
         },
       );
       child.once("error", (error) =>
@@ -867,7 +870,7 @@ export class LocalServerModule implements Module {
             stdio: ["pipe", "pipe", "pipe"],
             windowsHide: true,
             env: {
-              ...process.env,
+              ...this.#environment,
               ELECTRON_RUN_AS_NODE: "1",
               LINGER_HOME: home,
             },
@@ -920,7 +923,7 @@ export class LocalServerModule implements Module {
           stdio: ["ignore", "pipe", "pipe"],
           windowsHide: true,
           env: {
-            ...process.env,
+            ...this.#environment,
             ELECTRON_RUN_AS_NODE: "1",
             LINGER_HOME: this.#options.home,
           },
@@ -1660,7 +1663,7 @@ export class LocalServerModule implements Module {
           stdio: ["ignore", "pipe", "pipe"],
           windowsHide: true,
           env: {
-            ...process.env,
+            ...this.#environment,
             ELECTRON_RUN_AS_NODE: "1",
             LINGER_HOME: home,
           },
@@ -2265,7 +2268,7 @@ export class LocalServerModule implements Module {
         {
           stdio: ["pipe", "pipe", "ignore"],
           windowsHide: true,
-          env: { ...process.env, LINGER_HOME: home },
+          env: { ...this.#environment, LINGER_HOME: home },
           signal,
         },
       );
@@ -2324,7 +2327,7 @@ export class LocalServerModule implements Module {
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
         env: {
-          ...process.env,
+          ...this.#environment,
           LINGER_HOME: home,
           ...(this.#options.temporarySession
             ? {
@@ -2723,7 +2726,7 @@ export class LocalServerModule implements Module {
           // The pinned Node is a console program; without this Windows
           // opens a console window for it.
           windowsHide: true,
-          env: { ...process.env, LINGER_HOME: record.home },
+          env: { ...this.#environment, LINGER_HOME: record.home },
           signal,
         },
       );

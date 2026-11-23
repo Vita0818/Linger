@@ -1,4 +1,10 @@
-import { lstatSync, realpathSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
 import { mkdtemp, realpath, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -12,6 +18,7 @@ import {
 import {
   localmodelsStateDirectory,
   reuseTemporaryModelTools,
+  type LocalmodelsToolSource,
 } from "./localmodels-tool.js";
 import type { NativeRuntime } from "./managed-runtimes.js";
 import {
@@ -21,6 +28,7 @@ import {
 } from "./private-files.js";
 
 export const TEMPORARY_SESSION_ARGUMENT = "--temporary-session=";
+export const TEMPORARY_WATCH_READY = "Temporary session cleanup is ready.";
 const ROOT_PREFIX = "linger-temporary-session-";
 
 export interface TemporarySessionPaths {
@@ -43,6 +51,20 @@ function pathsFor(root: string): TemporarySessionPaths {
     workspace: path.join(root, "workspace"),
     setup: path.join(root, "setup.json"),
   };
+}
+
+/** Allocate the Desktop paths before Electron is ready to create a profile. */
+export function createTemporaryDesktopPaths(): TemporarySessionPaths {
+  const root = mkdtempSync(path.join(realpathSync(tmpdir()), ROOT_PREFIX));
+  const paths = pathsFor(root);
+  try {
+    for (const directory of [paths.home, paths.userData, paths.workspace])
+      mkdirSync(directory, { mode: 0o700 });
+    return paths;
+  } catch (error) {
+    rmSync(root, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 /** Resolve the private profile before Electron opens a session or a log file. */
@@ -114,11 +136,14 @@ async function activeByokModel(home: string): Promise<TemporarySessionModel> {
 
 export async function prepareTemporarySession(
   regularHome: string,
+  desktopPaths?: TemporarySessionPaths,
+  toolSource?: LocalmodelsToolSource,
 ): Promise<TemporarySessionPaths> {
   const model = await activeByokModel(regularHome);
   // Runtime tools reject symlinked ancestors, including the macOS /var alias.
   const base = await realpath(tmpdir());
-  const paths = pathsFor(await mkdtemp(path.join(base, ROOT_PREFIX)));
+  const paths =
+    desktopPaths ?? pathsFor(await mkdtemp(path.join(base, ROOT_PREFIX)));
   try {
     await privateDirectory(paths.root);
     await Promise.all(
@@ -133,13 +158,14 @@ export async function prepareTemporarySession(
       LOCALMODELS_TOOLS_DIR,
       {
         runtime: model.runtime,
+        ...(toolSource ? { source: toolSource } : {}),
       },
     );
     // The model credential never goes in process arguments or the environment.
     await atomicPrivate(paths.setup, JSON.stringify(model));
     return paths;
   } catch (error) {
-    await rm(paths.root, { recursive: true, force: true });
+    if (!desktopPaths) await rm(paths.root, { recursive: true, force: true });
     throw error;
   }
 }

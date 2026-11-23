@@ -9,7 +9,9 @@ import { freePort } from "@linger/local-installation/ports";
 import {
   prepareTemporarySession,
   TEMPORARY_SESSION_ARGUMENT,
+  TEMPORARY_WATCH_READY,
   temporarySessionEnvironment,
+  temporarySessionFromArgs,
   temporarySessionModelEnvironment,
   type TemporarySessionPaths,
 } from "@linger/local-installation/temporary-session";
@@ -91,9 +93,31 @@ export async function runTemporarySession(
     // A running service may still own the private database. Clean its storage
     // only after the stop succeeded.
     await (dependencies.stop ?? stop)(paths, env);
-    await unlockLocalmodelsKitsForRemoval(paths.home);
-    await removeRetrying(paths.root);
+    await removeTemporarySession(paths);
   }
   if (status !== 0)
     throw new Error("The temporary session exited unexpectedly.");
+}
+
+/** The Desktop's pipe closes after normal shutdown and after an abrupt exit. */
+export async function watchTemporarySession(root: string): Promise<void> {
+  const paths = temporarySessionFromArgs([TEMPORARY_SESSION_ARGUMENT + root]);
+  if (!paths) throw new Error("Missing temporary session.");
+  const env = {
+    ...temporarySessionModelEnvironment(paths.home),
+    LOCALMODELS_BIFROST_ADDR: process.env.LOCALMODELS_BIFROST_ADDR,
+  };
+  const closed = new Promise<void>((resolve) => {
+    process.stdin.once("end", resolve);
+    process.stdin.resume();
+  });
+  process.stdout.write(TEMPORARY_WATCH_READY + "\n");
+  await closed;
+  await stop(paths, env);
+  await removeTemporarySession(paths);
+}
+
+async function removeTemporarySession(paths: TemporarySessionPaths) {
+  await unlockLocalmodelsKitsForRemoval(paths.home);
+  await removeRetrying(paths.root);
 }

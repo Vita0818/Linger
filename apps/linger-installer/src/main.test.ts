@@ -283,6 +283,19 @@ it("tells the desktop client by code why a refused folder kept the keys unsaved"
   }
 });
 
+it("can start cleanup supervision for an existing temporary Desktop", async () => {
+  const { parseInstallerArguments } = await import("./main.js");
+  const root = path.resolve("linger-temporary-session-fixture");
+  expect(
+    parseInstallerArguments(["--watch-temporary-session", root]),
+  ).toMatchObject({
+    watchTemporarySession: root,
+  });
+  expect(() =>
+    parseInstallerArguments(["--watch-temporary-session", "relative"]),
+  ).toThrow("Temporary session root must be absolute.");
+});
+
 it("accepts an explicit bundled Desktop executable for the temporary supervisor", async () => {
   const { parseInstallerArguments } = await import("./main.js");
   const executable = path.resolve("Linger.app/Contents/MacOS/Linger");

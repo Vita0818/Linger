@@ -28,6 +28,7 @@ export function parseInstallerArguments(args: string[]) {
     stopLocalModels?: boolean;
     temporaryDesktop?: boolean;
     desktopExecutable?: string;
+    watchTemporarySession?: string;
   } = {
     home: lingerHome(),
   };
@@ -81,6 +82,7 @@ export function parseInstallerArguments(args: string[]) {
         "--instance",
         "--inspect-target",
         "--desktop-executable",
+        "--watch-temporary-session",
       ].includes(flag ?? "")
     )
       throw new Error("Invalid installer option.");
@@ -95,6 +97,10 @@ export function parseInstallerArguments(args: string[]) {
       if (!path.isAbsolute(value))
         throw new Error("Desktop executable must be absolute.");
       options.desktopExecutable = value;
+    } else if (flag === "--watch-temporary-session") {
+      if (!path.isAbsolute(value))
+        throw new Error("Temporary session root must be absolute.");
+      options.watchTemporarySession = value;
     } else if (flag === "--instance") {
       if (!/^[a-z][a-z0-9-]{0,39}$/.test(value))
         throw new Error("Invalid instance name.");
@@ -114,7 +120,8 @@ export function parseInstallerArguments(args: string[]) {
     !options.migrate &&
     !options.stop &&
     !options.stopLocalModels &&
-    !options.temporaryDesktop
+    !options.temporaryDesktop &&
+    !options.watchTemporarySession
   )
     throw new Error("The installer needs a source checkout (--source-repo).");
   if (options.desktopExecutable && !options.temporaryDesktop)
@@ -448,6 +455,16 @@ if (
     );
   } catch (error) {
     failedToStart(error);
+  }
+  if (options?.watchTemporarySession) {
+    try {
+      const { watchTemporarySession } =
+        await import("./server/temporary-session.js");
+      await watchTemporarySession(options.watchTemporarySession);
+    } catch {
+      process.exitCode = 1;
+    }
+    options = undefined;
   }
   if (options?.temporaryDesktop) {
     try {

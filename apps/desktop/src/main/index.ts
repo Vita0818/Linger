@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, renameSync, rmSync } from "node:fs";
+import { existsSync, renameSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,8 +17,13 @@ import {
 } from "electron";
 
 import { lingerHome } from "@linger/local-installation/home";
+import { readPublishedTool } from "@linger/local-installation/localmodels-tool";
+import { freePort } from "@linger/local-installation/ports";
 import {
+  createTemporaryDesktopPaths,
+  prepareTemporarySession,
   takeTemporarySessionModel,
+  TEMPORARY_WATCH_READY,
   temporarySessionEnvironment,
   temporarySessionFromArgs,
   temporarySessionModelEnvironment,
@@ -74,26 +79,23 @@ const supportsTemporarySession =
 
 let userDataMove: UserDataMove | undefined;
 let temporarySession: TemporarySessionPaths | undefined;
+let ownsTemporarySession = false;
 try {
   temporarySession = temporarySessionFromArgs(process.argv);
   if (temporarySession && process.platform !== "darwin")
     throw new Error("Temporary Desktop sessions require macOS.");
+  ownsTemporarySession = launchesTemporarySession(
+    process.argv,
+    supportsTemporarySession,
+    !!temporarySession,
+  );
+  if (ownsTemporarySession) temporarySession = createTemporaryDesktopPaths();
 } catch {
   dialog.showErrorBox("Linger", "The temporary session directory is invalid.");
   app.exit(1);
   throw new Error("Invalid temporary session.");
 }
-if (
-  launchesTemporarySession(
-    process.argv,
-    supportsTemporarySession,
-    !!temporarySession,
-  )
-) {
-  launchDefaultTemporarySession();
-} else {
-  startDesktop();
-}
+startDesktop();
 
 function startDesktop(): void {
   if (temporarySession) {
@@ -182,6 +184,37 @@ async function main(): Promise<void> {
   }
 
   const home = temporarySession?.home ?? lingerHome();
+  const environment: NodeJS.ProcessEnv | undefined = temporarySession
+    ? {
+        ...temporarySessionEnvironment(),
+        ...temporarySessionModelEnvironment(home),
+        LOCALMODELS_BIFROST_ADDR: process.env.LOCALMODELS_BIFROST_ADDR,
+      }
+    : undefined;
+  if (ownsTemporarySession && temporarySession && environment) {
+    let watching = false;
+    try {
+      environment.LOCALMODELS_BIFROST_ADDR = `127.0.0.1:${await freePort(new Set())}`;
+      await watchTemporaryDesktop(temporarySession, environment);
+      watching = true;
+      const defaultHome = lingerHome();
+      const record = await readLocalServerRecord(defaultHome);
+      const toolSource = await readPublishedTool(
+        path.join(here, "../installer/distribution.json"),
+      );
+      await prepareTemporarySession(
+        record?.home ?? defaultHome,
+        temporarySession,
+        toolSource,
+      );
+    } catch {
+      if (!watching)
+        rmSync(temporarySession.root, { recursive: true, force: true });
+      await showTemporaryLaunchFailure();
+      app.exit(1);
+      return;
+    }
+  }
   const finishTemporarySession = temporarySession
     ? () => app.quit()
     : undefined;
@@ -199,6 +232,7 @@ async function main(): Promise<void> {
   const localServer = new LocalServerModule({
     home,
     temporarySession: !!temporarySession,
+    ...(environment ? { environment } : {}),
     version: VERSION,
     macosVersion: () => process.getSystemVersion(),
     installerDirectory: path.join(here, "../installer"),
@@ -345,7 +379,7 @@ async function main(): Promise<void> {
       // with a matching version and the computer needs no Node.
       teamhubCliDirectory: path.join(here, "../teamhub-cli"),
       defaultDisplayName,
-      env: daemonEnv(log, temporarySession?.home),
+      env: daemonEnv(log, temporarySession?.home, environment),
       ...(temporarySession ? { usePreferredRuntimeOnly: true } : {}),
       ...(process.platform === "win32"
         ? { protect: protectWithDaemon(daemonExecutable()) }
@@ -510,6 +544,7 @@ function electronPower(): PowerApi {
 async function daemonEnv(
   log: Logger,
   temporaryHome?: string,
+  environment = process.env,
 ): Promise<Record<string, string>> {
   const started = Date.now();
   const login = temporaryHome ? undefined : await loginShellEnvironment();
@@ -519,7 +554,7 @@ async function daemonEnv(
   });
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(
-    withLoginShell(process.env as Record<string, string>, login),
+    withLoginShell(environment as Record<string, string>, login),
   )) {
     if (value === undefined || /^(ELECTRON_|LINGER_)/i.test(name)) continue;
     env[name] = value;
@@ -529,7 +564,7 @@ async function daemonEnv(
     "LINGER_CLAUDE_PATH",
     "LINGER_PI_PATH",
   ]) {
-    const value = process.env[name];
+    const value = environment[name];
     if (value) env[name] = value;
   }
   return temporaryHome
@@ -570,57 +605,73 @@ function moveLegacyUserData(
   };
 }
 
-// The default entry owns only this launcher and waits for the existing
-// installer supervisor. The guest starts with its own Desktop profile.
-function launchDefaultTemporarySession(): void {
-  try {
-    const directory = mkdtempSync(
-      path.join(os.tmpdir(), "linger-private-launch-"),
-    );
-    app.once("quit", () => rmSync(directory, { recursive: true, force: true }));
-    app.setPath("userData", directory);
-    app.setPath("sessionData", directory);
-    app.setActivationPolicy("accessory");
-  } catch {
-    dialog.showErrorBox("Linger", "Could not prepare the temporary launcher.");
-    app.exit(1);
-    return;
-  }
+function bundledSupervisorNode(): string {
+  return path.join(
+    here,
+    "../installer/native",
+    `runtime-${process.platform}-${process.arch}`,
+    "node/bin/node",
+  );
+}
 
-  void app.whenReady().then(async () => {
-    let status = 0;
-    try {
-      const defaultHome = lingerHome();
-      const record = await readLocalServerRecord(defaultHome);
-      await superviseTemporarySession(record?.home ?? defaultHome, {
-        keepLauncherAlive: true,
-      });
-    } catch {
-      status = 1;
-      const { response } = await dialog.showMessageBox({
-        type: "error",
-        message: "The temporary session could not start or close cleanly.",
-        detail:
-          "You can open regular Linger to check the configured BYOK model.",
-        buttons: ["Close", "Open Regular Linger"],
-        defaultId: 0,
-        cancelId: 0,
-      });
-      if (response === 1) {
-        const regular = spawn(process.execPath, ["--regular"], {
-          detached: true,
-          stdio: "ignore",
-          windowsHide: true,
-        });
-        regular.once("error", () =>
-          dialog.showErrorBox("Linger", "Could not open regular Linger."),
-        );
-        regular.unref();
-      }
-    } finally {
-      app.exit(status);
-    }
+function watchTemporaryDesktop(
+  paths: TemporarySessionPaths,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  const node = bundledSupervisorNode();
+  const bundled = existsSync(node);
+  const watcher = spawn(
+    bundled ? node : process.execPath,
+    [
+      path.join(here, "../installer/installer.js"),
+      "--watch-temporary-session",
+      paths.root,
+    ],
+    {
+      detached: true,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "ignore"],
+      env: {
+        ...environment,
+        ...(!bundled ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
+      },
+    },
+  );
+  watcher.stdin.on("error", () => {});
+  app.once("quit", () => watcher.stdin.end());
+  return new Promise((resolve, reject) => {
+    let output = "";
+    watcher.stdout.setEncoding("utf8");
+    watcher.stdout.on("data", (chunk: string) => {
+      output += chunk;
+      if (output.includes(TEMPORARY_WATCH_READY + "\n")) resolve();
+    });
+    watcher.once("error", reject);
+    watcher.once("exit", () =>
+      reject(new Error("Temporary Desktop cleanup could not start.")),
+    );
   });
+}
+
+async function showTemporaryLaunchFailure(): Promise<void> {
+  const { response } = await dialog.showMessageBox({
+    type: "error",
+    message: "The temporary session could not start.",
+    detail: "You can open regular Linger to check the configured BYOK model.",
+    buttons: ["Close", "Open Regular Linger"],
+    defaultId: 0,
+    cancelId: 0,
+  });
+  if (response !== 1) return;
+  const regular = spawn(process.execPath, ["--regular"], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  regular.once("error", () =>
+    dialog.showErrorBox("Linger", "Could not open regular Linger."),
+  );
+  regular.unref();
 }
 
 function openTemporarySession(home: string): void {
@@ -632,18 +683,8 @@ function openTemporarySession(home: string): void {
   );
 }
 
-function superviseTemporarySession(
-  home: string,
-  options: { keepLauncherAlive?: boolean } = {},
-): Promise<void> {
-  // The bundled Node keeps supervision independent of macOS application
-  // activation for the launcher and the temporary window.
-  const node = path.join(
-    here,
-    "../installer/native",
-    `runtime-${process.platform}-${process.arch}`,
-    "node/bin/node",
-  );
+function superviseTemporarySession(home: string): Promise<void> {
+  const node = bundledSupervisorNode();
   const useBundledNode = existsSync(node);
   const child = spawn(
     useBundledNode ? node : process.execPath,
@@ -664,7 +705,7 @@ function superviseTemporarySession(
       },
     },
   );
-  if (!options.keepLauncherAlive) child.unref();
+  child.unref();
   return new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", (code) => {

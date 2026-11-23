@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { localmodelsStateDirectory } from "./localmodels-tool.js";
 import { atomicPrivate, privateDirectory } from "./private-files.js";
 import {
+  createTemporaryDesktopPaths,
   prepareTemporarySession,
   takeTemporarySessionModel,
   TEMPORARY_SESSION_ARGUMENT,
@@ -93,6 +94,11 @@ describe("temporary session storage", () => {
 
       const paths = await prepareTemporarySession(ordinary.home);
       expect(path.dirname(paths.root)).toBe(await realpath(actual));
+      const desktop = createTemporaryDesktopPaths();
+      expect(path.dirname(desktop.root)).toBe(await realpath(actual));
+      expect(await prepareTemporarySession(ordinary.home, desktop)).toEqual(
+        desktop,
+      );
       expect(
         temporarySessionFromArgs([
           TEMPORARY_SESSION_ARGUMENT +
